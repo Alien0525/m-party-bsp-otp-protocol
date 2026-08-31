@@ -1,0 +1,86 @@
+:root {
+    --c-empty: #f3f4f6; --c-border: #e5e7eb; --c-text: #374151;
+    --c-bg: #f9fafb; --c-card: #ffffff;
+}
+* { box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; background: var(--c-bg); color: var(--c-text); margin: 0; }
+.container { max-width: 1400px; margin: 0 auto; background: var(--c-card); padding: 25px; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+
+.header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--c-border); padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+h1 { margin: 0; font-size: 24px; color: #111827; }
+.subtitle { font-size: 13px; color: #6b7280; margin-top: 4px; }
+
+.controls { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; background: #f8fafc; padding: 16px; border-radius: 8px; border: 1px solid var(--c-border); margin-bottom: 20px; }
+.input-group { display: flex; flex-direction: column; gap: 6px; }
+.input-group label { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; }
+input[type="number"], input[type="text"] { padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; }
+input[type="number"] { width: 70px; }
+input[type="text"] { width: 300px; font-family: monospace; letter-spacing: 1px; }
+
+button { padding: 9px 20px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.15s; font-size: 14px; }
+.btn-run { background: #1f2937; color: white; }
+.btn-run:hover { background: #374151; }
+.btn-run:disabled { background: #9ca3af; cursor: not-allowed; }
+.btn-reset { background: white; border: 1px solid #d1d5db; color: #374151; }
+.btn-reset:hover { background: #f3f4f6; }
+.divider { width: 1px; height: 40px; background: #e5e7eb; }
+
+.layout-grid { display: grid; grid-template-columns: 350px 1fr; gap: 20px; align-items: start; }
+
+.panel { background: #fff; border: 1px solid var(--c-border); border-radius: 8px; padding: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+.section-label { font-size: 12px; font-weight: 700; color: #4b5563; text-transform: uppercase; margin-bottom: 12px; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+
+/* STATE TABLE */
+.state-table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.state-table th { color: #6b7280; font-weight: 600; padding: 6px; border-bottom: 2px solid #e5e7eb; }
+.state-table td { padding: 8px 6px; border-bottom: 1px solid #f3f4f6; font-family: monospace; font-size: 14px; }
+.dir-arrow { font-weight: bold; }
+.dir-right { color: #10b981; }
+.dir-left { color: #ef4444; }
+
+/* PAD GRID */
+.pad-array { display: flex; flex-wrap: wrap; gap: 2px; max-height: 300px; overflow-y: auto; padding-right: 5px; }
+.pad { width: 26px; height: 26px; background: var(--c-empty); font-size: 10px; display: flex; justify-content: center; align-items: center; color: #9ca3af; border-radius: 3px; position: relative; font-weight: bold; }
+.pad.active { color: white; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.2); }
+
+/* BSP TREE */
+#tree-container { position: relative; padding: 20px 0; min-height: 140px; }
+.tree-level { position: relative; height: 30px; width: 100%; z-index: 2; margin-bottom: 20px; }
+.tree-node { position: absolute; transform: translateX(-50%); width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 10px; color: white; background: #d1d5db; border: 2px solid white; transition: all 0.3s ease; }
+.tree-node.used { background: #6b7280; }
+.tree-node.active-jump { background: #f59e0b; box-shadow: 0 0 10px rgba(245, 158, 11, 0.5); transform: translateX(-50%) scale(1.2); z-index: 10; }
+
+/* LOG */
+.log { background: #111827; color: #10b981; padding: 12px; height: 250px; overflow-y: auto; font-family: monospace; font-size: 12px; border-radius: 6px; }
+.log div { margin-bottom: 4px; border-bottom: 1px solid #1f2937; padding-bottom: 2px; }
+.log-err { color: #ef4444; font-weight: bold; }
+.log-warn { color: #f59e0b; }
+.log-sys { color: #60a5fa; }
+
+/* Disabled Parties */
+.state-table tr.disabled-party { opacity: 0.4; background: #f3f4f6; }
+.state-table tr.disabled-party td { text-decoration: line-through; }
+
+/* Jump Spot Indicators */
+.pad.jump-spot { background: #fef08a; color: #a16207; border: 1px dashed #eab308; font-weight: bold; }
+
+/* --- MODAL STYLES --- */
+.blocked-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 1000; }
+.modal { background: white; padding: 28px; border-radius: 12px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.2); text-align: center; max-width: 400px; width: 100%; border: 3px solid #ef4444; }
+.modal h1 { color: #ef4444; font-size: 26px; margin: 0 0 8px 0; }
+.modal p { color: #4b5563; margin-bottom: 20px; font-size: 14px; }
+.blocked-stats-table { width: 100%; margin-bottom: 16px; border-collapse: collapse; font-size: 14px; text-align: left; }
+.blocked-stats-table th { padding: 8px; border-bottom: 2px solid #e5e7eb; color: #6b7280; font-size: 12px; text-transform: uppercase; }
+.blocked-stats-table td { padding: 10px 8px; border-bottom: 1px solid #f3f4f6; }
+.modal-actions { display: flex; gap: 12px; justify-content: center; }
+.btn-view { background: #4b5563; color: white; }
+.btn-view:hover { background: #374151; }
+.btn-restart { background: #ef4444; color: white; }
+.btn-restart:hover { background: #dc2626; }
+
+/* --- DYNAMIC TREE STYLES --- */
+#tree-container { position: relative; padding: 10px 0; min-height: 150px; display: flex; flex-direction: column; gap: 35px; overflow: hidden; }
+#tree-lines { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; overflow: visible; }
+.tree-level { position: relative; height: 28px; width: 100%; z-index: 2; }
+.tree-node { position: absolute; transform: translateX(-50%); width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 11px; color: white; background: #9ca3af; border: 2px solid white; transition: all 0.3s ease; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.tree-node.active-jump { background: #eab308; box-shadow: 0 0 12px rgba(234, 179, 8, 0.7); transform: translateX(-50%) scale(1.2); z-index: 10; color: #713f12; border-color: #fef08a; }

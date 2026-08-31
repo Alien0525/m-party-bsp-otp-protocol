@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>M-Party BSP · OTP Routing Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ───────────────────────── DEADLOCK ALERT ───────────────────────── -->
+<div id="blockedOverlay" class="blocked-overlay">
+    <div class="modal">
+        <div class="modal-flag">PROTOCOL HALTED</div>
+        <h1>DEADLOCK</h1>
+        <p>Every arena has shrunk below the jump threshold. No safe relocation remains.</p>
+        <table class="blocked-stats-table">
+            <thead><tr><th>Active party</th><th>Pads used</th></tr></thead>
+            <tbody id="blockedTableBody"></tbody>
+        </table>
+        <div class="modal-waste">
+            <span>Total pads wasted</span>
+            <span id="statsWasted"></span>
+        </div>
+        <div class="modal-actions">
+            <button class="btn-view" onclick="closePopup()">View trace</button>
+            <button class="btn-restart" onclick="initSystem()">↻ Restart protocol</button>
+        </div>
+    </div>
+</div>
+
+<div class="container">
+
+    <!-- ───────────────────────── NAMEPLATE ───────────────────────── -->
+    <header class="header">
+        <div class="nameplate">
+            <div class="wordmark">
+                <span class="wordmark-glyph">◇</span>
+                <span>M‑Party BSP</span>
+                <span class="wordmark-sub">OTP Routing Monitor</span>
+            </div>
+            <div class="subtitle">Dynamic array re‑indexing &amp; paired jumping over a static BSP tree</div>
+        </div>
+        <div class="status" id="statusLamp" data-state="ready">
+            <span class="status-dot"></span>
+            <span class="status-text">Ready</span>
+        </div>
+    </header>
+
+    <!-- ───────────────────────── CONFIG WELL ───────────────────────── -->
+    <section class="controls" aria-label="Simulation parameters">
+        <div class="field">
+            <label for="inpN">Pads <span class="sym">N</span></label>
+            <input type="number" id="inpN" value="100" min="2" title="Total length of the shared pad array.">
+        </div>
+        <div class="field">
+            <label for="inpD">Delay <span class="sym">d</span></label>
+            <input type="number" id="inpD" value="5" min="0" title="Safety buffer kept between two facing parties at all times.">
+        </div>
+        <div class="field">
+            <label for="inpM">Parties <span class="sym">m</span></label>
+            <input type="number" id="inpM" value="4" min="1" title="Number of real parties. Scaled up to the next power of two internally.">
+        </div>
+
+        <div class="field">
+            <label for="selRule">Jump rule</label>
+            <select id="selRule" title="Root-most (A6): always relocate into the largest available cell -- logarithmic jump count for every m. Fixed-order (A5): scan pairs in positional order. They coincide for m=4."
+                    onchange="if (typeof LANDING_RULE !== 'undefined') { LANDING_RULE = this.value; } if (typeof initSystem === 'function') initSystem();">
+                <option value="rootmost" selected>Root-most (A6)</option>
+                <option value="fixed">Fixed-order (A5)</option>
+            </select>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field field-grow">
+            <label for="inpSeq">Message sequence</label>
+            <input type="text" id="inpSeq" value="AABBCD" placeholder="e.g. AABBCDA  (use A3 for AAA)" spellcheck="false" autocomplete="off">
+            <div class="presets" aria-label="Sequence presets">
+                <button type="button" class="chip" data-seq="A40">Single flood</button>
+                <button type="button" class="chip" data-seq="ABABABABABABABAB">Collision force</button>
+                <button type="button" class="chip" data-seq="ABCDABCDABCDABCD">Round robin</button>
+            </div>
+        </div>
+
+        <div class="field">
+            <label for="inpSpeed">Speed <span class="sym">ms</span></label>
+            <input type="number" id="inpSpeed" value="100" step="50" min="0" title="Delay between steps. Set 0 to run instantly.">
+        </div>
+
+        <div class="actions">
+            <button class="btn-run" id="btnRun" onclick="runSequence()">▶ Run sequence</button>
+            <button class="btn-reset" onclick="initSystem()">↻ Reset</button>
+        </div>
+    </section>
+
+    <!-- ───────────────────────── WORKSPACE ───────────────────────── -->
+    <div class="layout-grid">
+
+        <!-- Left rail: live readout + state array -->
+        <aside class="rail">
+            <section class="panel readout-panel">
+                <div class="section-label">Live readout</div>
+                <div class="readout" id="live-stats"><span class="readout-idle">Awaiting run…</span></div>
+            </section>
+
+            <section class="panel">
+                <div class="section-label">State array <span class="label-note">S = (P₁, P₂, …)</span></div>
+                <table class="state-table" id="stateTable">
+                    <thead><tr><th>#</th><th>Party</th><th>Pos</th><th>Dir</th></tr></thead>
+                    <tbody id="stateBody"></tbody>
+                </table>
+            </section>
+        </aside>
+
+        <!-- Main column: the pad tape (hero) + BSP tree -->
+        <main class="stage">
+            <section class="panel tape-panel">
+                <div class="section-label section-label-row">
+                    <span>Pad array</span>
+                    <div class="legend" aria-hidden="true">
+                        <span class="legend-item"><i class="sw sw-active"></i>Active</span>
+                        <span class="legend-item"><i class="sw sw-ghost"></i>Ghost anchor</span>
+                        <span class="legend-item"><i class="sw sw-jump"></i>Jump spot</span>
+                        <span class="legend-item"><i class="sw sw-empty"></i>Free</span>
+                    </div>
+                </div>
+                <div class="tape">
+                    <div class="pad-array" id="padGrid"></div>
+                </div>
+                <div class="ruler"><span>pad 1</span><span class="ruler-line"></span><span>pad N</span></div>
+            </section>
+
+            <section class="panel tree-panel">
+                <div class="section-label">Static BSP tree <span class="label-note">candidate landing points</span></div>
+                <div id="tree-container">
+                    <svg id="tree-lines"></svg>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ───────────────────────── CONSOLE ───────────────────────── -->
+    <section class="panel console-panel">
+        <div class="section-label">System log</div>
+        <div class="log" id="logBox"></div>
+    </section>
+
+</div>
+
+<script src="protocol.js"></script>
+<script>
+/* Additive UI helpers — do not alter protocol behaviour, only convenience & chrome.
+   Every call below targets elements/functions already defined by protocol.js. */
+(function () {
+    // Preset chips fill the sequence field.
+    document.querySelectorAll('.chip[data-seq]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var seq = document.getElementById('inpSeq');
+            seq.value = btn.getAttribute('data-seq');
+            seq.focus();
+        });
+    });
+
+    // Enter inside any config field runs the sequence (if not already running).
+    ['inpN', 'inpD', 'inpM', 'inpSeq', 'inpSpeed'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !document.getElementById('btnRun').disabled) {
+                e.preventDefault();
+                runSequence();
+            }
+        });
+    });
+
+    // Drive the status lamp off the Run button's disabled state (set by protocol.js).
+    var btn = document.getElementById('btnRun');
+    var lamp = document.getElementById('statusLamp');
+    var overlay = document.getElementById('blockedOverlay');
+    function sync() {
+        if (overlay && overlay.style.display === 'flex') { setLamp('halt', 'Deadlock'); return; }
+        if (btn.disabled) setLamp('running', 'Running'); else setLamp('ready', 'Ready');
+    }
+    function setLamp(state, text) {
+        if (!lamp) return;
+        lamp.setAttribute('data-state', state);
+        lamp.querySelector('.status-text').textContent = text;
+    }
+    new MutationObserver(sync).observe(btn, { attributes: true, attributeFilter: ['disabled'] });
+    if (overlay) new MutationObserver(sync).observe(overlay, { attributes: true, attributeFilter: ['style'] });
+    sync();
+})();
+</script>
+</body>
+</html>

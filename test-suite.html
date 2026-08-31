@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BSP Protocol — Test Suite</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+        :root {
+            --bg: #0a0e14;
+            --surface: #111722;
+            --surface2: #1a2232;
+            --border: #1f2d42;
+            --accent: #00d4aa;
+            --accent2: #4a9eff;
+            --warn: #f59e0b;
+            --danger: #ef4444;
+            --success: #22c55e;
+            --text: #cdd6f4;
+            --muted: #6b7fa3;
+            --mono: 'IBM Plex Mono', monospace;
+            --sans: 'IBM Plex Sans', sans-serif;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: var(--sans); background: var(--bg); color: var(--text); padding: 32px 24px; min-height: 100vh; }
+
+        /* ── HEADER ── */
+        .header {
+            display: flex; align-items: flex-start; justify-content: space-between;
+            flex-wrap: wrap; gap: 20px; margin-bottom: 28px;
+            border-bottom: 1px solid var(--border); padding-bottom: 24px;
+        }
+        .header-eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 2px; color: var(--accent); text-transform: uppercase; margin-bottom: 8px; }
+        h1 { font-size: 26px; font-weight: 600; color: #e2e8f0; letter-spacing: -0.5px; }
+        .header-sub { font-size: 13px; color: var(--muted); margin-top: 6px; max-width: 720px; line-height: 1.7; }
+
+        /* ── SCENARIO KEY ── */
+        .scenario-key {
+            display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start;
+            margin-bottom: 24px; padding: 14px 18px;
+            background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+        }
+        .scenario-key-label { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; align-self: center; margin-right: 4px; white-space: nowrap; }
+        .scenario-key-item { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--muted); flex: 1; min-width: 220px; }
+        .scenario-key-item .tag { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 2px 7px; border-radius: 3px; text-transform: uppercase; flex-shrink: 0; }
+        .scenario-key-item strong { color: var(--text); font-weight: 600; }
+
+        /* ── BUTTON ── */
+        #btnRun {
+            font-family: var(--mono); font-size: 13px; font-weight: 700;
+            letter-spacing: 1px; background: var(--accent); color: #0a0e14;
+            border: none; border-radius: 6px; padding: 12px 28px;
+            cursor: pointer; transition: all 0.2s; white-space: nowrap; align-self: center; text-transform: uppercase;
+        }
+        #btnRun:hover { background: #00f0c0; box-shadow: 0 0 20px rgba(0,212,170,0.3); }
+        #btnRun:disabled { background: var(--surface2); color: var(--muted); cursor: not-allowed; box-shadow: none; }
+
+        /* ── PROGRESS ── */
+        #progress-label { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 8px; display: none; }
+        #progress-bar-wrap { display: none; margin-bottom: 20px; background: var(--surface); border-radius: 4px; border: 1px solid var(--border); overflow: hidden; height: 6px; }
+        #progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); width: 0%; transition: width 0.3s ease; }
+
+        /* ── GLOBAL SUMMARY CARDS ── */
+        #summary-grid { display: none; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 14px; margin-bottom: 28px; }
+        .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+        .stat-card-label { font-family: var(--mono); font-size: 10px; letter-spacing: 1.5px; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; }
+        .stat-card-value { font-family: var(--mono); font-size: 24px; font-weight: 700; line-height: 1; }
+        .stat-card-value.green  { color: var(--success); }
+        .stat-card-value.yellow { color: var(--warn); }
+        .stat-card-value.red    { color: var(--danger); }
+        .stat-card-value.blue   { color: var(--accent2); }
+        .stat-card-sub { font-size: 11px; color: var(--muted); margin-top: 5px; }
+
+        /* ── SECTION TITLE ── */
+        .section-title { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin-bottom: 12px; }
+
+        /* ── M BREAKDOWN TABLE ── */
+        #m-breakdown { display: none; margin-bottom: 28px; }
+        .m-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+        .m-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        .m-table thead tr { background: var(--surface2); border-bottom: 2px solid var(--border); }
+        .m-table th { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 1.5px; color: var(--muted); text-transform: uppercase; padding: 10px 16px; text-align: left; white-space: nowrap; }
+        .m-table td { padding: 11px 16px; font-family: var(--mono); border-bottom: 1px solid var(--border); vertical-align: middle; }
+        .m-table tbody tr:last-child td { border-bottom: none; }
+        .m-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+        .m-val { font-size: 16px; font-weight: 700; color: #e2e8f0; }
+        .baseline-col { color: var(--muted); }
+        .beat    { color: var(--success); font-weight: 700; }
+        .fail    { color: var(--danger);  font-weight: 700; }
+        .neutral { color: var(--warn);    font-weight: 600; }
+        .delta-pos { color: var(--success); }
+        .delta-neg { color: var(--danger); }
+
+        /* ── MAIN RESULTS TABLE ── */
+        .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        thead tr { background: var(--surface2); border-bottom: 2px solid var(--border); }
+        th { font-family: var(--mono); font-weight: 700; font-size: 10px; letter-spacing: 1.5px; color: var(--muted); text-transform: uppercase; padding: 12px 14px; text-align: left; white-space: nowrap; }
+        tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+        tbody tr:last-child { border-bottom: none; }
+        tbody tr:hover { background: rgba(255,255,255,0.02); }
+        td { padding: 9px 14px; font-family: var(--mono); font-size: 12px; color: var(--text); vertical-align: middle; }
+        td.scenario-cell { font-family: var(--sans); font-size: 12.5px; color: #8ba3c7; min-width: 210px; }
+        td.scenario-cell .tag { display: inline-block; font-family: var(--mono); font-size: 9px; letter-spacing: 1px; padding: 2px 7px; border-radius: 3px; margin-right: 7px; vertical-align: middle; text-transform: uppercase; font-weight: 700; }
+        .tag-mc  { background: rgba(74,158,255,0.15); color: var(--accent2); }
+        .tag-rr  { background: rgba(0,212,170,0.12);  color: var(--accent); }
+        .tag-fl  { background: rgba(245,158,11,0.12); color: var(--warn); }
+        .tag-col { background: rgba(239,68,68,0.12);  color: var(--danger); }
+
+        td.pct-cell { font-weight: 700; font-size: 13px; }
+        .waste-beats-baseline { color: var(--success); }
+        .waste-near-baseline  { color: var(--warn); }
+        .waste-over-baseline  { color: var(--danger); }
+
+        .param-group-header td { background: var(--surface2); font-family: var(--mono); font-size: 10px; letter-spacing: 2px; color: var(--accent); text-transform: uppercase; padding: 9px 14px; border-bottom: 1px solid var(--border); }
+        .placeholder td { text-align: center; color: var(--muted); font-family: var(--sans); padding: 40px; font-size: 14px; }
+
+        /* ── FOOTNOTE ── */
+        .footnote { margin-top: 20px; font-size: 11px; color: #3a4a5e; font-family: var(--mono); line-height: 1.9; }
+    </style>
+</head>
+<body>
+<div style="max-width: 1440px; margin: 0 auto;">
+
+    <!-- HEADER -->
+    <div class="header">
+        <div>
+            <div class="header-eyebrow">M-Party BSP Protocol</div>
+            <h1>Headless Simulation Test Suite</h1>
+            <p class="header-sub">
+                Wastage&nbsp;= (N − padsUsed) / N.
+                <strong style="color:var(--text)">Baseline = (m−1)/m</strong> — without BSP jumps,
+                only 1 of m arenas is ever reachable, so m=3 wastes 66.7%, m=4 wastes 75%, m=8 wastes 87.5%, etc.
+                The goal of the protocol is to beat that number.
+                d&nbsp;∈&nbsp;{3,4,5} (fixed) · N&nbsp;∈&nbsp;{100,128,256,512,1000,1024,2048} ·
+                m&nbsp;∈&nbsp;{3,4} for small N; {3,4,5,8,10,16} for large N.
+                Monte Carlo averaged over 50 trials.
+            </p>
+        </div>
+        <button id="btnRun" onclick="runAllTests()">▶ Run Suite</button>
+    </div>
+
+    <!-- SCENARIO KEY -->
+    <div class="scenario-key">
+        <span class="scenario-key-label">What each test measures →</span>
+        <div class="scenario-key-item">
+            <span class="tag tag-mc">MC</span>
+            <span><strong>Monte Carlo</strong> — random party selection; models realistic async message arrival. Best estimate of average-case wastage.</span>
+        </div>
+        <div class="scenario-key-item">
+            <span class="tag tag-rr">RR</span>
+            <span><strong>Round Robin</strong> — perfectly uniform turn-taking; measures protocol efficiency under ideal fairness-guaranteed scheduling.</span>
+        </div>
+        <div class="scenario-key-item">
+            <span class="tag tag-fl">FL</span>
+            <span><strong>Single Flood</strong> — one party sends all messages; stress-tests worst-case imbalanced load and early deadlock conditions.</span>
+        </div>
+        <div class="scenario-key-item">
+            <span class="tag tag-col">COL</span>
+            <span><strong>Collision Force</strong> — strict A↔B alternation; maximises jump frequency to stress-test the BSP arena-relocation mechanism.</span>
+        </div>
+    </div>
+
+    <!-- PROGRESS -->
+    <div id="progress-label">Running…</div>
+    <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+
+    <!-- GLOBAL SUMMARY -->
+    <div id="summary-grid">
+        <div class="stat-card">
+            <div class="stat-card-label">Total Runs</div>
+            <div class="stat-card-value blue" id="sc-total">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-label">Avg Wastage</div>
+            <div class="stat-card-value yellow" id="sc-avg-waste">—</div>
+            <div class="stat-card-sub">across all runs</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-label">Best Wastage</div>
+            <div class="stat-card-value green" id="sc-best">—</div>
+            <div class="stat-card-sub" id="sc-best-label"></div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-label">Worst Wastage</div>
+            <div class="stat-card-value red" id="sc-worst">—</div>
+            <div class="stat-card-sub" id="sc-worst-label"></div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-label">Beat Baseline</div>
+            <div class="stat-card-value green" id="sc-beat">—</div>
+            <div class="stat-card-sub" id="sc-beat-pct"></div>
+        </div>
+    </div>
+
+    <!-- M BREAKDOWN -->
+    <div id="m-breakdown">
+        <div class="section-title">Wastage by m — vs. Baseline (m−1)/m &nbsp; (over all N, d, scenario combinations)</div>
+        <div class="m-table-wrap">
+            <table class="m-table">
+                <thead>
+                    <tr>
+                        <th>m</th>
+                        <th title="Next power of 2 ≥ m">m_ceil</th>
+                        <th>Baseline</th>
+                        <th>Best wastage</th>
+                        <th>Avg wastage</th>
+                        <th>Worst wastage</th>
+                        <th title="Average wastage minus baseline; negative = beats baseline">Δ avg vs baseline</th>
+                        <th>Runs beating baseline</th>
+                    </tr>
+                </thead>
+                <tbody id="mBreakdownBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- MAIN TABLE -->
+    <div class="section-title" style="margin-bottom:10px;">Full results — all parameter combinations</div>
+    <div class="table-wrap">
+        <table id="resultsTable">
+            <thead>
+                <tr>
+                    <th>Scenario</th>
+                    <th>N</th>
+                    <th>d</th>
+                    <th>m</th>
+                    <th title="Next power of 2 ≥ m">m_ceil</th>
+                    <th>Steps</th>
+                    <th>Jumps</th>
+                    <th>Pads Used</th>
+                    <th>Wasted</th>
+                    <th>Waste %</th>
+                    <th title="▼ = beats baseline, ▲ = exceeds it">vs Baseline</th>
+                </tr>
+            </thead>
+            <tbody id="resultsBody">
+                <tr class="placeholder"><td colspan="11">Click "Run Suite" to begin…</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="footnote">
+        * Wastage = (N − padsUsed) / N &nbsp;·&nbsp;
+        Baseline = (m−1)/m — only 1 of m arenas usable without jump mechanism &nbsp;·&nbsp;
+        <span style="color:var(--success)">Green</span> = beats baseline &nbsp;·&nbsp;
+        <span style="color:var(--warn)">Yellow</span> = within 5 pp below baseline &nbsp;·&nbsp;
+        <span style="color:var(--danger)">Red</span> = exceeds baseline &nbsp;·&nbsp;
+        ▼ delta = improvement over baseline · ▲ delta = regression &nbsp;·&nbsp;
+        padsUsed increments on ghost→active (anchor) and each forward step &nbsp;·&nbsp;
+        MC = 50-trial avg · maxIterations = N×20
+    </div>
+</div>
+
+<script>
+"use strict";
+
+// ════════════════════════════════════════════════════════════
+// HEADLESS SIMULATOR — faithful port of protocol.js
+// ════════════════════════════════════════════════════════════
+
+function generateBSPNodes(N) {
+    const nodes = [];
+    const queue = [{ L: 1, R: N }];
+    while (queue.length > 0) {
+        const curr = queue.shift();
+        const M = Math.floor((curr.L + curr.R) / 2);
+        if (M > curr.L && M < curr.R) {
+            nodes.push(M);
+            if (curr.R - curr.L >= 2) {
+                queue.push({ L: curr.L, R: M - 1 });
+                queue.push({ L: M + 1, R: curr.R });
+            }
+        }
+    }
+    return nodes;
+}
+
+class BSPSimulator {
+    constructor(N, d, m) {
+        this.N           = N;
+        this.d           = d;
+        this.m_input     = m;
+        this.m_ceil      = Math.pow(2, Math.ceil(Math.log2(Math.max(2, m))));
+        this.parties     = [];
+        this.bspNodes    = generateBSPNodes(N);
+        this.jumpsExecuted  = 0;
+        this.stepsExecuted  = 0;
+        this.deadlock    = false;
+        this._activePads = new Set();
+        this._initParties();
+    }
+
+    _initParties() {
+        const na = this.m_ceil / 2;
+        const as = Math.floor(this.N / na);
+        for (let i = 0; i < na; i++) {
+            const start = (i * as) + 1;
+            const end   = (i === na - 1) ? this.N : (i + 1) * as;
+            const logL  = String.fromCharCode(65 + i * 2);
+            const logR  = String.fromCharCode(65 + i * 2 + 1);
+            this.parties.push({ logical_id: logL, pos: start, dir:  1, active: (i*2)   < this.m_input, hasStarted: false, padsUsed: 0 });
+            this.parties.push({ logical_id: logR, pos: end,   dir: -1, active: (i*2+1) < this.m_input, hasStarted: false, padsUsed: 0 });
+        }
+    }
+
+    _getNextBSPSpot(BL, BR) {
+        for (let i = 0; i < this.bspNodes.length; i++) {
+            const M = this.bspNodes[i];
+            if (M > BL && M + 1 < BR && (M - BL - 1 > this.d) && (BR - (M + 1) - 1 > this.d))
+                return M;
+        }
+        return null;
+    }
+
+    _claimPad(pos, pIdx) {
+        if (!this._activePads.has(pos)) {
+            this._activePads.add(pos);
+            this.parties[pIdx].padsUsed++;
+        }
+    }
+
+    step(char) {
+        if (this.deadlock) return { ok: false };
+        let pIdx = this.parties.findIndex(p => p.logical_id === char);
+        if (pIdx === -1) return { ok: true };
+        if (!this.parties[pIdx].active) return { ok: true };
+
+        let success = false, cb = 0;
+        while (!success && cb < 10) {
+            cb++;
+            pIdx = this.parties.findIndex(p => p.logical_id === char);
+            const p  = this.parties[pIdx];
+            const ti = p.dir === 1 ? pIdx + 1 : pIdx - 1;
+            let bound, fp = false;
+            if      (ti < 0)              bound = 0;
+            else if (ti >= this.m_ceil)   bound = this.N + 1;
+            else                          { bound = this.parties[ti].pos; fp = true; }
+
+            const ep = Math.abs(bound - p.pos) - 1;
+
+            if (ep > this.d) {
+                if (!p.hasStarted) { p.hasStarted = true; this._claimPad(p.pos, pIdx); }
+                else               { p.pos += p.dir;      this._claimPad(p.pos, pIdx); }
+                success = true;
+                this.stepsExecuted++;
+            } else {
+                if (!fp) { this.deadlock = true; return { ok: false }; }
+                const pl = Math.min(pIdx, ti);
+                const L  = this.parties[pl], R = this.parties[pl + 1];
+                if (L.dir !== 1 || R.dir !== -1) { this.deadlock = true; return { ok: false }; }
+
+                const gaps = [];
+                for (let g = 0; g < this.m_ceil - 1; g++)
+                    if (g !== pl && this.parties[g].dir === 1 && this.parties[g+1].dir === -1)
+                        gaps.push(g);
+                const og = gaps.filter(g => g > pl).concat(gaps.filter(g => g < pl));
+
+                let jf = false;
+                for (const g of og) {
+                    const M = this._getNextBSPSpot(this.parties[g].pos, this.parties[g+1].pos);
+                    if (M !== null) {
+                        L.pos = M;     L.dir = -1; L.hasStarted = false;
+                        R.pos = M + 1; R.dir =  1; R.hasStarted = false;
+                        this.parties.sort((a, b) => a.pos - b.pos);
+                        this.jumpsExecuted++;
+                        jf = true;
+                        break;
+                    }
+                }
+                if (!jf) { this.deadlock = true; return { ok: false }; }
+            }
+        }
+        return { ok: success };
+    }
+
+    runUntilDeadlock(gen, maxSteps) {
+        let i = 0;
+        while (!this.deadlock && i < maxSteps) {
+            const ids = this._activeIds();
+            const res = this.step(gen(ids, i));
+            if (!res.ok) break;
+            i++;
+        }
+    }
+
+    _activeIds() { return this.parties.filter(p => p.active).map(p => p.logical_id); }
+
+    getStats() {
+        const used   = this.parties.reduce((s, p) => s + p.padsUsed, 0);
+        const wasted = this.N - used;
+        const pct    = (wasted / this.N) * 100;
+        return { used, wasted, pct: parseFloat(pct.toFixed(2)), jumps: this.jumpsExecuted, steps: this.stepsExecuted, deadlock: this.deadlock };
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// PARAMETER MATRIX
+// ════════════════════════════════════════════════════════════
+
+const D_VALUES = [3, 4, 5];
+const SMALL_N  = [100, 128];
+const LARGE_N  = [256, 512, 1000, 1024, 2048];
+const M_SMALL  = [3, 4];
+const M_LARGE  = [3, 4, 5, 8, 10, 16];
+
+const PARAM_MATRIX = (() => {
+    const rows = [];
+    const push = (Ns, Ms) => { for (const N of Ns) for (const d of D_VALUES) for (const m of Ms) rows.push([N, d, m]); };
+    push(SMALL_N, M_SMALL);
+    push(LARGE_N, M_LARGE);
+    return rows;
+})();
+
+const MC_TRIALS = 50;
+
+const SCENARIOS = [
+    { id: 'mc',  tag: 'MC',  tagClass: 'tag-mc',  name: 'Monte Carlo',     gen: (ids)    => ids[Math.floor(Math.random() * ids.length)] },
+    { id: 'rr',  tag: 'RR',  tagClass: 'tag-rr',  name: 'Round Robin',     gen: (ids, i) => ids[i % ids.length] },
+    { id: 'fl',  tag: 'FL',  tagClass: 'tag-fl',  name: 'Single Flood',    gen: (ids)    => ids[0] },
+    { id: 'col', tag: 'COL', tagClass: 'tag-col', name: 'Collision Force', gen: (ids, i) => ids[i % Math.min(2, ids.length)] },
+];
+
+// ════════════════════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════════════════════
+
+function mceil(m) { return Math.pow(2, Math.ceil(Math.log2(Math.max(2, m)))); }
+function baseline(m) { return ((m - 1) / m) * 100; }  // e.g. 66.67 for m=3
+
+// Colour based on relation to baseline, not absolute value
+function wasteClass(pct, m) {
+    const bl = baseline(m);
+    if (pct < bl - 5) return 'waste-beats-baseline'; // clearly better → green
+    if (pct <= bl)    return 'waste-near-baseline';  // within 5 pp below → yellow
+    return 'waste-over-baseline';                    // exceeds baseline → red
+}
+
+function runScenario(N, d, m, gen) {
+    const sim = new BSPSimulator(N, d, m);
+    sim.runUntilDeadlock(gen, N * 20);
+    return sim.getStats();
+}
+
+function avgStats(arr) {
+    const n = arr.length;
+    const avg = k => arr.reduce((s, x) => s + x[k], 0) / n;
+    const pct = avg('pct');
+    return { used: Math.round(avg('used')), wasted: Math.round(avg('wasted')), pct: parseFloat(pct.toFixed(2)), jumps: Math.round(avg('jumps')), steps: Math.round(avg('steps')), deadlock: arr.every(s => s.deadlock) };
+}
+
+// ════════════════════════════════════════════════════════════
+// MAIN RUNNER
+// ════════════════════════════════════════════════════════════
+
+async function runAllTests() {
+    const btn   = document.getElementById('btnRun');
+    const tbody = document.getElementById('resultsBody');
+    btn.disabled = true;
+    btn.innerText = 'Running…';
+    tbody.innerHTML = '';
+
+    document.getElementById('progress-label').style.display   = 'block';
+    document.getElementById('progress-bar-wrap').style.display = 'block';
+    document.getElementById('summary-grid').style.display     = 'none';
+    document.getElementById('m-breakdown').style.display      = 'none';
+
+    // Accumulators
+    let totalRuns = 0, totalWaste = 0, beatCount = 0;
+    let bestPct = Infinity, bestLabel = '', worstPct = -Infinity, worstLabel = '';
+
+    const allMs = [...new Set(PARAM_MATRIX.map(r => r[2]))].sort((a, b) => a - b);
+    const mStats = {};
+    for (const m of allMs) mStats[m] = { best: Infinity, worst: -Infinity, sum: 0, count: 0, beatCount: 0 };
+
+    const totalWork = PARAM_MATRIX.length * SCENARIOS.length;
+    let done = 0;
+
+    for (const [N, d, m] of PARAM_MATRIX) {
+        const bl = baseline(m);
+
+        // Group separator row
+        const sepTr = document.createElement('tr');
+        sepTr.className = 'param-group-header';
+        sepTr.innerHTML = `<td colspan="11">▸ N=${N} &nbsp; d=${d} &nbsp; m=${m} &nbsp; <span style="color:var(--muted)">(m_ceil=${mceil(m)}, baseline=${bl.toFixed(1)}%)</span></td>`;
+        tbody.appendChild(sepTr);
+
+        for (const sc of SCENARIOS) {
+            await new Promise(r => setTimeout(r, 0)); // yield to keep UI alive
+
+            const stats = sc.id === 'mc'
+                ? avgStats(Array.from({ length: MC_TRIALS }, () => runScenario(N, d, m, sc.gen)))
+                : runScenario(N, d, m, sc.gen);
+
+            // Global accumulators
+            totalRuns++;
+            totalWaste += stats.pct;
+            if (stats.pct < bl) beatCount++;
+
+            const label = `${sc.name} · N=${N} d=${d} m=${m}`;
+            if (stats.pct < bestPct)  { bestPct  = stats.pct; bestLabel  = label; }
+            if (stats.pct > worstPct) { worstPct = stats.pct; worstLabel = label; }
+
+            // Per-m accumulators
+            const ms = mStats[m];
+            if (stats.pct < ms.best)  ms.best = stats.pct;
+            if (stats.pct > ms.worst) ms.worst = stats.pct;
+            ms.sum += stats.pct;
+            ms.count++;
+            if (stats.pct < bl) ms.beatCount++;
+
+            // Build row
+            const mcNote   = sc.id === 'mc' ? ` <span style="color:var(--muted);font-size:10px;">(avg ${MC_TRIALS})</span>` : '';
+            const delta    = stats.pct - bl;
+            const deltaSign= delta <= 0 ? '▼' : '▲';
+            const deltaCls = delta <= 0 ? 'delta-pos' : 'delta-neg';
+            const vsBase   = `<span class="${deltaCls}">${deltaSign}${Math.abs(delta).toFixed(1)} pp</span>`;
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td class="scenario-cell"><span class="tag ${sc.tagClass}">${sc.tag}</span>${sc.name}${mcNote}</td>
+                <td>${N}</td>
+                <td>${d}</td>
+                <td>${m}</td>
+                <td style="color:var(--muted)">${mceil(m)}</td>
+                <td>${stats.steps.toLocaleString()}</td>
+                <td>${stats.jumps}</td>
+                <td>${stats.used.toLocaleString()}</td>
+                <td>${stats.wasted.toLocaleString()}</td>
+                <td class="pct-cell ${wasteClass(stats.pct, m)}">${stats.pct.toFixed(1)}%</td>
+                <td>${vsBase}</td>
+            `;
+            tbody.appendChild(tr);
+
+            done++;
+            const pct = (done / totalWork) * 100;
+            document.getElementById('progress-bar').style.width  = pct + '%';
+            document.getElementById('progress-label').innerText  = `Running… ${done} / ${totalWork} (${pct.toFixed(0)}%)`;
+        }
+    }
+
+    // ── Global summary cards ───────────────────────────────────────────────
+    document.getElementById('sc-total').innerText      = totalRuns;
+    document.getElementById('sc-avg-waste').innerText  = (totalWaste / totalRuns).toFixed(1) + '%';
+    document.getElementById('sc-best').innerText       = bestPct.toFixed(1) + '%';
+    document.getElementById('sc-best-label').innerText = bestLabel;
+    document.getElementById('sc-worst').innerText      = worstPct.toFixed(1) + '%';
+    document.getElementById('sc-worst-label').innerText= worstLabel;
+    document.getElementById('sc-beat').innerText       = beatCount;
+    document.getElementById('sc-beat-pct').innerText   = `${((beatCount / totalRuns) * 100).toFixed(0)}% of all runs`;
+    document.getElementById('summary-grid').style.display = 'grid';
+
+    // ── Per-m breakdown ────────────────────────────────────────────────────
+    const mTbody = document.getElementById('mBreakdownBody');
+    mTbody.innerHTML = '';
+    for (const m of allMs) {
+        const ms  = mStats[m];
+        const bl  = baseline(m);
+        const avg = ms.sum / ms.count;
+        const delta    = avg - bl;
+        const deltaSign= delta <= 0 ? '▼' : '▲';
+        const deltaCls = delta <= 0 ? 'delta-pos' : 'delta-neg';
+        const beatPct  = ((ms.beatCount / ms.count) * 100).toFixed(0);
+
+        const avgCls   = avg      < bl      ? 'beat' : avg      < bl + 5 ? 'neutral' : 'fail';
+        const bestCls  = ms.best  < bl      ? 'beat' : ms.best  < bl + 5 ? 'neutral' : 'fail';
+        const worstCls = ms.worst < bl      ? 'beat' : ms.worst < bl + 5 ? 'neutral' : 'fail';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td class="m-val">${m}</td>
+            <td style="color:var(--muted)">${mceil(m)}</td>
+            <td class="baseline-col">${bl.toFixed(1)}%</td>
+            <td class="${bestCls}">${ms.best.toFixed(1)}%</td>
+            <td class="${avgCls}">${avg.toFixed(1)}%</td>
+            <td class="${worstCls}">${ms.worst.toFixed(1)}%</td>
+            <td><span class="${deltaCls}">${deltaSign}${Math.abs(delta).toFixed(1)} pp</span></td>
+            <td>${ms.beatCount} / ${ms.count} <span style="color:var(--muted)">(${beatPct}%)</span></td>
+        `;
+        mTbody.appendChild(tr);
+    }
+    document.getElementById('m-breakdown').style.display = 'block';
+
+    // ── Done ──────────────────────────────────────────────────────────────
+    document.getElementById('progress-label').style.display    = 'none';
+    document.getElementById('progress-bar-wrap').style.display = 'none';
+    btn.disabled  = false;
+    btn.innerText = '▶ Run Again';
+}
+</script>
+</body>
+</html>
