@@ -306,11 +306,17 @@ class BSPSimulator {
         }
     }
 
-    _getNextBSPSpot(BL, BR) {
+    // Largest available cell: scan BSP nodes root-first (biggest cuts first)
+    // and return the first node that lands validly inside ANY candidate gap,
+    // together with that gap's left index. Matches protocol A5.
+    _getGlobalRootMostSpot(gaps) {
         for (let i = 0; i < this.bspNodes.length; i++) {
             const M = this.bspNodes[i];
-            if (M > BL && M + 1 < BR && (M - BL - 1 > this.d) && (BR - (M + 1) - 1 > this.d))
-                return M;
+            for (const g of gaps) {
+                const BL = this.parties[g].pos, BR = this.parties[g + 1].pos;
+                if (M > BL && M + 1 < BR && (M - BL - 1 > this.d) && (BR - (M + 1) - 1 > this.d))
+                    return { M, g };
+            }
         }
         return null;
     }
@@ -358,17 +364,15 @@ class BSPSimulator {
                         gaps.push(g);
                 const og = gaps.filter(g => g > pl).concat(gaps.filter(g => g < pl));
 
+                // Relocate the colliding pair into the largest available cell.
+                const hop = this._getGlobalRootMostSpot(og);
                 let jf = false;
-                for (const g of og) {
-                    const M = this._getNextBSPSpot(this.parties[g].pos, this.parties[g+1].pos);
-                    if (M !== null) {
-                        L.pos = M;     L.dir = -1; L.hasStarted = false;
-                        R.pos = M + 1; R.dir =  1; R.hasStarted = false;
-                        this.parties.sort((a, b) => a.pos - b.pos);
-                        this.jumpsExecuted++;
-                        jf = true;
-                        break;
-                    }
+                if (hop !== null) {
+                    L.pos = hop.M;     L.dir = -1; L.hasStarted = false;
+                    R.pos = hop.M + 1; R.dir =  1; R.hasStarted = false;
+                    this.parties.sort((a, b) => a.pos - b.pos);
+                    this.jumpsExecuted++;
+                    jf = true;
                 }
                 if (!jf) { this.deadlock = true; return { ok: false }; }
             }

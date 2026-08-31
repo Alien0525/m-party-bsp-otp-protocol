@@ -8,14 +8,12 @@ let padColors = {};
 let finalWastedStr = null; // Tracks final waste for the UI
 let usedPads = new Set();   // Model-owned ground truth of consumed pads (independent of the DOM)
 
-// Landing rule for relocations (BSP jumps):
-//   'rootmost' : protocol A6 -- always relocate into the LARGEST available cell
-//                (scan BSP nodes root-first globally). Keeps arenas balanced, so the
-//                relocation count J is logarithmic in N for every m (see paper, Sec. 5.1).
-//   'fixed'    : protocol A5 -- scan other pairs in positional order, take the root-most
-//                node of the first pair that admits one (the original behaviour).
-// A6 and A5 coincide when m = 4 (only one other pair exists).
-let LANDING_RULE = 'rootmost';
+// Relocation (BSP jump) landing rule: on a collision a pair always relocates
+// into the LARGEST available cell, found by scanning the BSP nodes root-first
+// (breadth-first) and taking the first split point that fits, with buffer > d
+// on both sides, inside another pair's currently unused interval. This keeps
+// the arenas balanced, so the number of relocations J stays logarithmic in N
+// for every m (see paper, Section 5).
 
 // Records that `pos` was consumed by `party` (idempotent). This is the single
 // source of truth for padsUsed / wasted, so accounting no longer depends on
@@ -141,12 +139,11 @@ function getNextBSPSpot(BoundL, BoundR) {
     return null;
 }
 
-// Protocol A6 (root-most rule): scan BSP nodes root-first (largest cells first)
-// and return the first node that lands validly inside ANY of the candidate gaps,
-// together with that gap's left index. This relocates into the largest available
-// cell globally, rather than into the first pair in positional order.
-// `gaps` is a list of left-indices g such that (parties[g], parties[g+1]) is a
-// facing pair we may jump into.
+// The relocation scan: go through the BSP nodes root-first (largest cells
+// first) and return the first node that lands validly inside ANY candidate
+// gap, together with that gap's left index -- i.e. the largest available cell
+// the pair can legally move into. `gaps` is a list of left-indices g such that
+// (parties[g], parties[g+1]) is a facing pair we may relocate into.
 function getGlobalRootMostSpot(gaps) {
     for (let i = 0; i < bspNodes.length; i++) {
         let M = bspNodes[i];
@@ -321,23 +318,13 @@ async function runSequence() {
 
                 let orderedGaps = gapsToCheck.filter(g => g > pairLeftIdx).concat(gapsToCheck.filter(g => g < pairLeftIdx));
 
-                // Choose the landing point according to the configured rule.
-                // Both yield a target M and the host gap's left index g.
-                let hop = null;
-                if (LANDING_RULE === 'rootmost') {
-                    // A6: largest available cell, scanning BSP nodes root-first globally.
-                    hop = getGlobalRootMostSpot(orderedGaps);
-                } else {
-                    // A5: first pair in positional order that admits a valid node.
-                    for (let g of orderedGaps) {
-                        let M = getNextBSPSpot(parties[g].pos, parties[g + 1].pos);
-                        if (M !== null) { hop = { M: M, g: g }; break; }
-                    }
-                }
+                // Relocate into the largest available cell (root-most BSP node
+                // valid in any candidate gap).
+                let hop = getGlobalRootMostSpot(orderedGaps);
 
                 if (hop !== null) {
                     let M = hop.M;
-                    log(`[JUMP SUCCESS] Valid BSP spot found at ${M} (rule: ${LANDING_RULE}).`, 'sys');
+                    log(`[JUMP SUCCESS] Valid BSP spot found at ${M} (largest available cell).`, 'sys');
 
                     historicalMs.add(M);
 

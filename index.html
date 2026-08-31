@@ -65,15 +65,6 @@
             <input type="number" id="inpM" value="4" min="1" title="Number of real parties. Scaled up to the next power of two internally.">
         </div>
 
-        <div class="field">
-            <label for="selRule">Jump rule</label>
-            <select id="selRule" title="Root-most (A6): always relocate into the largest available cell -- logarithmic jump count for every m. Fixed-order (A5): scan pairs in positional order. They coincide for m=4."
-                    onchange="if (typeof LANDING_RULE !== 'undefined') { LANDING_RULE = this.value; } if (typeof initSystem === 'function') initSystem();">
-                <option value="rootmost" selected>Root-most (A6)</option>
-                <option value="fixed">Fixed-order (A5)</option>
-            </select>
-        </div>
-
         <div class="divider"></div>
 
         <div class="field field-grow">

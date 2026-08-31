@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Variance-controlled experiment for the root-most relocation rule (protocol A6)
-vs the fixed-order rule (protocol A5), for the M-party BSP-OTP protocol.
+Variance-controlled experiment for the M-party BSP-OTP protocol (largest-
+available-cell relocation).
 
 Measures, across multiple seeds and a wide (m, d, N) grid, under a
 relocation-MAXIMISING adversary:
   * J           : number of relocations (jumps)
-  * bound       : (m/2 - 1) * (K - l0 + 1)   [the paper's Theorem 6 count]
-  * epochs      : jumps per BSP level (should be exactly m/2 - 1 for A6)
+  * bound       : (m/2 - 1) * (K - l0 + 1)   [the paper's Theorem 5 count]
+  * epochs      : jumps per BSP level (should be exactly m/2 - 1)
   * frontier    : whether the shallowest-arena level is monotone (Lemma 10)
   * alpha       : efficiency ratio = used/N
 
@@ -34,21 +34,16 @@ def build(N,m):
 
 def cell_level(N,w): return max(0,round(math.log2(N/max(1,w+1))))
 
-def target(P,mc,d,pl,nodes,rule):
+def target(P,mc,d,pl,nodes):
+    # largest available cell: first BSP node (root-first) valid in any other pair's gap
     pairs=[(P[g]['pos'],P[g+1]['pos'],g) for g in range(mc-1)
            if g!=pl and P[g]['dir']==1 and P[g+1]['dir']==-1]
-    if rule=='rootmost':
-        for cand in nodes:
-            for (BL,BR,g) in pairs:
-                if cand>BL and cand+1<BR and cand-BL-1>d and BR-cand-2>d: return cand,g
-    else:
-        order=[x for x in pairs if x[2]>pl]+[x for x in pairs if x[2]<pl]
-        for (BL,BR,g) in order:
-            for cand in nodes:
-                if cand>BL and cand+1<BR and cand-BL-1>d and BR-cand-2>d: return cand,g
+    for cand in nodes:
+        for (BL,BR,g) in pairs:
+            if cand>BL and cand+1<BR and cand-BL-1>d and BR-cand-2>d: return cand,g
     return None,None
 
-def adversary(N,m,d,rule,nodes,rng):
+def adversary(N,m,d,nodes,rng):
     """closest-collision adversary with random tie-breaks; returns (J, alpha, epochs, frontier_monotone)."""
     P,mc=build(N,m); used=set(); J=0; steps=0
     from collections import Counter
@@ -79,7 +74,7 @@ def adversary(N,m,d,rule,nodes,rng):
             if not fp: return J,len(used)/N,epoch,mono
             pl=min(pi,ti); L=P[pl]; R=P[pl+1]
             if L['dir']!=1 or R['dir']!=-1: return J,len(used)/N,epoch,mono
-            M,g=target(P,mc,d,pl,nodes,rule)
+            M,g=target(P,mc,d,pl,nodes)
             if M is None: return J,len(used)/N,epoch,mono
             a,b=P[g]['cell']
             epoch[cell_level(N,b-a-1)]+=1
@@ -97,28 +92,26 @@ def main():
     ap.add_argument('--seeds',type=int,default=10)
     args=ap.parse_args()
     Ms=[4,8,16,32,64]; Ns=[4096,16384,65536]; Ds=[1,2,4]
-    print(f"Root-most (A6) vs fixed-order (A5), relocation-maximising adversary, {args.seeds} seeds each\n")
-    print(f"{'m':>3}{'d':>3}{'N':>9} | {'J_A5(max)':>9} | {'J_A6(max)':>9}{'bound':>7} | {'epoch==m/2-1?':>13}{'mono?':>6} | {'a_A5':>6}{'a_A6':>7}")
+    print(f"M-party BSP-OTP protocol, relocation-maximising adversary, {args.seeds} seeds each\n")
+    print(f"{'m':>3}{'d':>3}{'N':>9} | {'J(max)':>7}{'bound':>7} | {'J<=bound?':>10}{'epoch==m/2-1?':>14}{'mono?':>6} | {'alpha':>7}")
     allgood=True
     for m in Ms:
         for d in Ds:
             for N in Ns:
                 nodes=gen_bsp(N)
-                j5=[]; j6=[]; a5=[]; a6=[]; epoch_ok=True; mono_ok=True
+                js=[]; als=[]; epoch_ok=True; mono_ok=True
                 l0=round(math.log2(m//2)); K=math.floor(math.log2(N/(2*d+4)))
                 bound=(m//2-1)*(K-l0+1)
                 for s in range(args.seeds):
-                    J5,al5,_,_=adversary(N,m,d,'fixed',nodes,random.Random(1000+s)); j5.append(J5); a5.append(al5)
-                    J6,al6,ep,mono=adversary(N,m,d,'rootmost',nodes,random.Random(1000+s)); j6.append(J6); a6.append(al6)
+                    J,al,ep,mono=adversary(N,m,d,nodes,random.Random(1000+s)); js.append(J); als.append(al)
                     if m>4:
                         active=[v for k,v in ep.items() if v>0]
                         if active and max(active)!=(m//2-1): epoch_ok=False
                     if not mono: mono_ok=False
-                within = max(j6)<=bound if m>4 else True
+                within = max(js)<=bound if m>4 else True
                 allgood = allgood and within and mono_ok
-                flag = 'OK' if (epoch_ok and within) else 'CHECK'
-                print(f"{m:>3}{d:>3}{N:>9} | {max(j5):>9} | {max(j6):>9}{bound:>7} | {str(epoch_ok):>13}{str(mono_ok):>6} | {min(a5):>6.3f}{min(a6):>7.3f}")
+                print(f"{m:>3}{d:>3}{N:>9} | {max(js):>7}{bound:>7} | {str(within):>10}{str(epoch_ok):>14}{str(mono_ok):>6} | {min(als):>7.3f}")
         print()
-    print("Summary: A6 within (m/2-1)(K-l0+1) bound & frontier monotone everywhere:", allgood)
+    print("Summary: within (m/2-1)(K-l0+1) bound & frontier monotone everywhere:", allgood)
 
 if __name__=='__main__': main()

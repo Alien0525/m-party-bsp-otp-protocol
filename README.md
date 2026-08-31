@@ -35,18 +35,53 @@ Upon collision, the pair halts and initiates a jump sequence:
 * A jump spot `M` is only valid if it guarantees `> d` empty pads on both the Left and Right sides of the new landing coordinate.
 * Once found, the left party lands at `M` and faces left (-1), while the right party lands at `M+1` and faces right (+1). The global array is physically re-sorted.
 
-### 5. Deadlock
+### 5. Landing Rule: Largest Available Cell
+Which valid spot the pair jumps to is what keeps the protocol efficient. On a collision the pair always relocates into the **largest available cell**: it scans the BSP node list root-first (biggest cuts first) and takes the first node that lands validly — with buffer `> d` on both sides — inside *any* other pair's currently unused interval. Filling big space before small keeps the arenas balanced, which holds the total number of relocations *logarithmic* in `N` for every `m` (rather than letting the pad fragment into `~N/d` tiny pieces). For `m = 4` there is a single other pair, so this coincides with the four-party rule.
+
+### 6. Deadlock
 If a pair collides and the algorithm scans the entire array without finding a valid BSP jump spot `M` that satisfies the `d` constraint, the protocol halts.
+
+## Efficiency Guarantees
+
+Let `α` be the efficiency ratio (fraction of pads actually used before deadlock). The controlling quantity is `J`, the total number of relocations; each relocation strands at most `d+2` pads and each of the `m/2` final arenas at most `2d+5`, so
+
+`α ≥ 1 − ((d+2)J + (m/2)(2d+5))/N`.
+
+Because the pair always moves into the largest available cell, the shallowest live cell only ever gets deeper (a **monotone frontier**), so the execution sweeps the BSP levels once — from the initial level `ℓ₀ = log₂(m/2)` to the deepest splittable level `K = ⌊log₂(N/(2d+4))⌋` — spending at most `m/2 − 1` relocations per level. Hence
+
+`J ≤ (m/2 − 1)·⌈log₂(2N/(m(2d+3)))⌉ = O(m·log(N/(md)))`, and
+`α ≥ 1 − O(m·d·log(N/(md)) / N) → 1`
+
+for every fixed `m` and `d ≪ N`. For `m = 4` this is the sharp `J < log₂(N/(2d+3))` bound. The one intrinsic limitation, shared by every delay-buffered scheme, is large `d`: the guarantees are meaningful only when `d ≪ N/m`, and degrade once the safety buffers alone consume each arena.
 
 ## Headless Simulation and Efficacy
 
 The repository includes a headless Monte Carlo test suite (`test-suite.html`) designed to bypass DOM rendering and calculate array fragmentation over tens of thousands of permutations. 
 
-The test suite measures **Pad Wastage %** (Unused Pads / Total Pads at Deadlock). By evaluating edge cases (Max Jumps / Collision Forcing, No Jumps / Single-Sided Floods, and Pure Random Traffic), the protocol proves it mathematically outperforms the traditional static allocation baseline across all scenarios by dynamically reallocating dead space.
+The test suite measures **Pad Wastage %** (Unused Pads / Total Pads at Deadlock). By evaluating edge cases (Max Jumps / Collision Forcing, No Jumps / Single-Sided Floods, and Pure Random Traffic), the protocol proves it mathematically outperforms the traditional static allocation baseline across all scenarios by dynamically reallocating dead space. In the full sweep every configuration beats the static `(m−1)/m` baseline, and for `m = 4` the measured jump counts obey the proven `J < log₂(N/(2d+3))` bound in every case.
+
+A separate, self-contained experiment (`rootmost_experiment.py`, plain-Python stdlib only) stress-tests the protocol under a relocation-maximising adversary across multiple seeds and a wide `(m, d, N)` grid. It reports the relocation count against the `(m/2−1)(K−ℓ₀+1)` bound, the per-level ("epoch") structure, the monotone-frontier check, and the efficiency ratio. Run it with:
+
+```
+python3 rootmost_experiment.py --seeds 10
+```
+
+Sample output is saved in `rootmost_results.txt`: the relocation count matches the theoretical bound to the unit, every level takes exactly `m/2 − 1` relocations, the frontier is always monotone, and efficiency climbs toward 1 as `N` grows (e.g. `α ≈ 0.99` at `m = 32`).
+
+## Theory and Write-Up
+
+The accompanying paper (`april26v1.tex`) develops the formal model and proofs: security (no pad reuse within the `d`-undelivery family), the four- and general-`m` protocols with formal `⟨Init, Send, Receive⟩` descriptions, and the efficiency analysis above (§5). Two companion notes explain the derivations in plain language, step by step:
+
+* `Section4_m4_derivations.tex` — the four-party (`m = 4`) bounds.
+* `Section5_general_m_derivations.tex` — the general-`m` bounds, the budget/potential argument, and the root-most fix.
 
 ## Repository Structure
 
 * `index.html`: The main interactive UI and visualization DOM.
-* `protocol.js`: The core mathematical engine containing the state array, jump logic, collision detection, and statistical tracking.
+* `protocol.js`: The core mathematical engine containing the state array, relocation logic (largest-available-cell scan), collision detection, and statistical tracking.
 * `style.css`: UI styling, dynamic tree node animations, and deadlock modal styling.
 * `test-suite.html`: A standalone Javascript simulation engine designed to batch-test permutations without visual overhead.
+* `rootmost_experiment.py`: Self-contained variance-controlled experiment validating the relocation bound, per-level structure, and efficiency under an adversary.
+* `rootmost_results.txt`: Saved output of the experiment across the `(m, d, N)` grid.
+* `april26v1.tex`: The formal paper (model, protocols, security and efficiency proofs).
+* `Section4_m4_derivations.tex`, `Section5_general_m_derivations.tex`: Plain-language derivation notes.
