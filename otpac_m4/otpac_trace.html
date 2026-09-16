@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTPAC m=4 — individual-jump trace</title>
+<style>
+  :root{
+    --p0:#2563eb; --p1:#16a34a; --p2:#ea580c; --p3:#9333ea;
+    --bg:#0e1116; --panel:#161b22; --line:#2d333b; --ink:#e6edf3; --ink2:#9aa4b2;
+    --used:#3b1d1d; --reuse:#ef4444;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:12px 16px;border-bottom:1px solid var(--line)}
+  h1{font-size:15px;margin:0 0 8px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+  .fld{display:flex;flex-direction:column;gap:2px}
+  .fld label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+  input,select,button{background:#0d1117;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
+  button{cursor:pointer;background:#1f6feb;border-color:#1f6feb}
+  button:hover{background:#388bfd}
+  main{display:grid;grid-template-columns:1fr 420px;gap:0;height:calc(100vh - 92px)}
+  #left{overflow:auto;padding:12px 16px;border-right:1px solid var(--line)}
+  #right{overflow:auto;padding:12px 16px}
+  .p0{color:var(--p0)} .p1{color:var(--p1)} .p2{color:var(--p2)} .p3{color:var(--p3)}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin-right:4px}
+  .b0{background:var(--p0)} .b1{background:var(--p1)} .b2{background:var(--p2)} .b3{background:var(--p3)}
+  .status{margin:8px 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+  .status.reuse{border-color:var(--reuse);color:#ffb4b4}
+  .status.clean{border-color:#2ea043;color:#9be7a6}
+  /* pad strip */
+  #strip{margin:10px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  #stripCanvas{display:block;width:100%;height:70px;background:#0b0e13}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0;font-size:11px;color:var(--ink2)}
+  /* per-party views */
+  .views{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+  .view{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:8px}
+  .view h3{margin:0 0 6px;font-size:12px}
+  .view .row{font-size:12px;padding:1px 0}
+  .view .buf{color:var(--ink2)}
+  .mut{color:var(--ink2)}
+  /* log */
+  .logtools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px}
+  .logtools label{font-size:12px;color:var(--ink2);display:flex;gap:4px;align-items:center}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:3px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{position:sticky;top:0;background:var(--panel);z-index:1}
+  tr.sel{background:#132132}
+  tr.evReuse td{background:#3b1414;color:#ffb4b4}
+  tr.evJump td{font-weight:700}
+  tr:hover td{background:#0f1620;cursor:pointer}
+  .pill{display:inline-block;padding:0 6px;border-radius:10px;font-size:10px;border:1px solid var(--line)}
+  .scrub{display:flex;gap:8px;align-items:center;margin:6px 0}
+  .scrub input[type=range]{flex:1}
+  code{color:#d2a8ff}
+</style>
+</head>
+<body>
+<header>
+  <h1>OTPAC m=4 · individual-jump · async trace</h1>
+  <div class="controls">
+    <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="256" min="16" style="width:90px"></div>
+    <div class="fld"><label>d (buffer)</label><input id="inD" type="number" value="2" min="1" style="width:70px"></div>
+    <div class="fld"><label>seed</label><input id="inSeed" type="number" value="18" style="width:80px"></div>
+    <div class="fld"><label>delivery</label>
+      <select id="inMode">
+        <option value="worst" selected>worst (latest legal)</option>
+        <option value="random">random (≤d)</option>
+        <option value="adversarial">adversarial</option>
+      </select>
+    </div>
+    <div class="fld"><label>sender order</label>
+      <select id="inPick">
+        <option value="random" selected>random</option>
+        <option value="rr">round-robin</option>
+        <option value="flood">flood (P0 first)</option>
+      </select>
+    </div>
+    <div class="fld"><label>max steps</label><input id="inMax" type="number" value="20000" style="width:100px"></div>
+    <button id="run">Run</button>
+  </div>
+</header>
+
+<main>
+  <div id="left">
+    <div id="statusBox" class="status mut">Set inputs and press Run.</div>
+
+    <div class="legend">
+      <span><span class="dot b0"></span>P0 (→)</span>
+      <span><span class="dot b1"></span>P1 (←)</span>
+      <span><span class="dot b2"></span>P2 (→)</span>
+      <span><span class="dot b3"></span>P3 (←)</span>
+      <span><span class="dot" style="background:#3b1d1d"></span>used pad</span>
+      <span><span class="dot" style="background:#ef4444"></span>reuse</span>
+    </div>
+
+    <div id="strip"><canvas id="stripCanvas" width="1200" height="70"></canvas></div>
+
+    <div class="scrub">
+      <span class="mut">step</span>
+      <input id="scrub" type="range" min="0" max="0" value="0">
+      <span id="scrubLbl" class="mut">0 / 0</span>
+    </div>
+
+    <div class="views" id="views"></div>
+  </div>
+
+  <div id="right">
+    <div class="logtools">
+      <strong>Log</strong>
+      <label><input type="checkbox" class="fp" value="0" checked><span class="p0">P0</span></label>
+      <label><input type="checkbox" class="fp" value="1" checked><span class="p1">P1</span></label>
+      <label><input type="checkbox" class="fp" value="2" checked><span class="p2">P2</span></label>
+      <label><input type="checkbox" class="fp" value="3" checked><span class="p3">P3</span></label>
+      <span class="mut">|</span>
+      <label><input type="checkbox" class="ft" value="WALK" checked>walk</label>
+      <label><input type="checkbox" class="ft" value="JUMP" checked>jump</label>
+      <label><input type="checkbox" class="ft" value="HALT" checked>halt</label>
+      <label><input type="checkbox" class="ft" value="REUSE" checked>reuse</label>
+    </div>
+    <table id="logTable"><thead><tr>
+      <th>#</th><th>actor</th><th>event</th><th>from→to</th><th>node</th><th>note</th>
+    </tr></thead><tbody id="logBody"></tbody></table>
+  </div>
+</main>
+
+<script>
+"use strict";
+// ======================= ENGINE (identical to otpac_m4.js) =======================
+function bspNodes(n){const out=[];const q=[[1,n]];while(q.length){const [L,R]=q.shift();const M=(L+R)>>1;if(M>L&&M<R){out.push(M);if(R-L>=2){q.push([L,M-1]);q.push([M+1,R]);}}}return out;}
+function initWorld(n,d,m){m=m||4;const parties=[];const arenas=m/2,aw=Math.floor(n/arenas);
+  for(let a=0;a<arenas;a++){const L=a*aw+1,R=(a===arenas-1)?n:(a+1)*aw;
+    parties.push({id:2*a,pos:L,dir:+1,halted:false,sent:0});
+    parties.push({id:2*a+1,pos:R,dir:-1,halted:false,sent:0});}
+  return {n,d,m,parties,used:new Map(),nodes:bspNodes(n)};}
+function buildBlocked(view,n){const blocked=new Set();const reservedBy=new Map();
+  for(const [id,o] of view.others){blocked.add(o.pos);for(const b of o.buf){blocked.add(b);if(!reservedBy.has(b))reservedBy.set(b,id);}}
+  blocked.add(view.self.pos);
+  if(view.used)for(const u of view.used)blocked.add(u);
+  return {blocked,reservedBy};}
+function clearance(p,step,blocked,n){let c=0,q=p+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
+function nextSlot(pos,dir,view,n,d,nodes){
+  const {blocked}=buildBlocked(view,n);
+  const lin=pos+dir; const ahead=clearance(pos,dir,blocked,n);
+  if(lin>=1&&lin<=n&&!blocked.has(lin)&&ahead>d) return {pad:lin,jumped:false,face:dir};
+  for(const M of nodes){const left=M,right=M+1;if(right>n)continue;
+    if(blocked.has(left)&&blocked.has(right))continue;
+    const cand=dir===+1?right:left; if(blocked.has(cand))continue;
+    if(clearance(cand,+1,blocked,n)>d&&clearance(cand,-1,blocked,n)>d) return {pad:cand,jumped:true,face:dir};}
+  return null;}
+function refreshBuffer(observerView,k,n,d,nodes){
+  const ko=observerView.others.get(k);let p=ko.pos,dir=ko.dir;const buf=[];
+  const obstacleOthers=new Map();for(const [id,o] of observerView.others)if(id!==k)obstacleOthers.set(id,o);
+  const tmp={self:observerView.self,others:obstacleOthers,used:observerView.used};
+  for(let s=0;s<d;s++){const nx=nextSlot(p,dir,tmp,n,d,nodes);if(!nx)break;buf.push(nx.pad);p=nx.pad;if(nx.jumped)dir=nx.face;
+    tmp.others=new Map(tmp.others);tmp.others.set("_tmp"+s,{pos:nx.pad,dir,buf:[]});}
+  ko.buf=buf;}
+
+// ======================= DRIVER (matches finalcap.js exactly) =======================
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+function simulate(n,d,seed,mode,pick,maxSteps){
+  const w=initWorld(n,d,4);const rng=mulberry32(seed);
+  const sent={0:[],1:[],2:[],3:[]};const heard={};
+  for(const o of w.parties){heard[o.id]={};for(const k of w.parties)if(k.id!==o.id)heard[o.id][k.id]=0;}
+  const views=new Map();
+  for(const me of w.parties){const others=new Map();for(const k of w.parties)if(k.id!==me.id)others.set(k.id,{pos:k.pos,dir:k.dir,buf:[]});
+    const v={self:{pos:me.pos,dir:me.dir},others,used:new Set()};
+    for(const k of w.parties)if(k.id!==me.id)refreshBuffer(v,k.id,n,d,w.nodes);views.set(me.id,v);}
+  const inflight=[];let g=0;const P=id=>w.parties.find(p=>p.id===id);
+  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;o.pos=m.pad;o.dir=m.dir;v.used.add(m.pad);refreshBuffer(v,m.from,n,d,w.nodes);heard[rid][m.from]++;}
+  function deliverBefore(rid){ if(mode==="worst")return; const del=new Set();
+    for(const m of inflight.filter(m=>m.to===rid)){const pe=mode==="random"?0.5:0.1;if(rng()<pe){applyRecv(rid,m);del.add(m);}}
+    if(del.size){const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);} }
+  function capQueues(){for(const r of w.parties){let mine=inflight.filter(m=>m.to===r.id).sort((a,b)=>a.gseq-b.gseq);const ex=mine.length-d;if(ex<=0)continue;const del=new Set();for(let i=0;i<ex;i++){applyRecv(r.id,mine[i]);del.add(mine[i]);}const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);}}
+
+  const events=[];
+  function snapshot(){
+    const positions={};for(const p of w.parties)positions[p.id]={pos:p.pos,dir:p.dir,halted:p.halted};
+    const vv={};for(const o of w.parties){vv[o.id]={};for(const [k,ov] of views.get(o.id).others)vv[o.id][k]={pos:ov.pos,dir:ov.dir,buf:ov.buf.slice()};}
+    const stale={};for(const o of w.parties){stale[o.id]={};for(const k of w.parties)if(k.id!==o.id)stale[o.id][k.id]=sent[k.id].length-heard[o.id][k.id];}
+    return {positions,views:vv,stale,used:w.used.size};
+  }
+  let steps=0,reuse=null;
+  events.push({step:0,type:"INIT",actor:-1,note:"initial",snap:snapshot()});
+  while(steps<maxSteps){
+    const live=w.parties.filter(p=>!p.halted);if(!live.length)break;
+    let me;
+    if(pick==="random")me=live[Math.floor(rng()*live.length)];
+    else if(pick==="rr")me=live[steps%live.length];
+    else me=live[0];
+    const prev=me.pos,pdir=me.dir;
+    if(mode!=="worst")deliverBefore(me.id);
+    const v=views.get(me.id);v.self.pos=me.pos;v.self.dir=me.dir;
+    const nx=nextSlot(me.pos,me.dir,v,n,d,w.nodes);steps++;
+    if(!nx){me.halted=true;events.push({step:steps,type:"HALT",actor:me.id,from:prev,to:prev,note:"no legal jumpspot",snap:snapshot()});continue;}
+    if(w.used.has(nx.pad)){reuse={pad:nx.pad,first:w.used.get(nx.pad),second:me.id,step:steps};
+      events.push({step:steps,type:"REUSE",actor:me.id,from:prev,to:nx.pad,jumped:nx.jumped,node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,
+        note:`pad ${nx.pad} already used by P${w.used.get(nx.pad)}`,snap:snapshot()});break;}
+    me.pos=nx.pad;if(nx.jumped)me.dir=nx.face;me.sent++;
+    w.used.set(nx.pad,me.id);g++;v.used.add(nx.pad);sent[me.id].push(nx.pad);
+    for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g});
+    capQueues();
+    events.push({step:steps,type:nx.jumped?"JUMP":"WALK",actor:me.id,from:prev,to:nx.pad,
+      node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,note:nx.jumped?`node (${(pdir>0?nx.pad-1:nx.pad)},${(pdir>0?nx.pad-1:nx.pad)+1})`:"",snap:snapshot()});
+  }
+  // verify invariant
+  let invViol=null;
+  for(const e of events){const s=e.snap;for(const oid in s.stale)for(const kid in s.stale[oid])if(s.stale[oid][kid]>d){invViol={oid,kid,val:s.stale[oid][kid],step:e.step};break;}}
+  return {n,d,seed,mode,pick,events,reuse,invViol,usedTotal:w.used.size};
+}
+
+// ======================= UI =======================
+let RUN=null, SEL=0;
+const $=id=>document.getElementById(id);
+function classP(id){return "p"+id;}
+
+function run(){
+  const n=+$("inN").value,d=+$("inD").value,seed=+$("inSeed").value,mode=$("inMode").value,pick=$("inPick").value,max=+$("inMax").value;
+  RUN=simulate(n,d,seed,mode,pick,max);
+  SEL=RUN.events.length-1;
+  // status
+  const sb=$("statusBox");
+  if(RUN.reuse){sb.className="status reuse";
+    sb.innerHTML=`<strong>REUSE</strong> at step ${RUN.reuse.step}: pad <code>${RUN.reuse.pad}</code> used first by <span class="${classP(RUN.reuse.first)}">P${RUN.reuse.first}</span>, then by <span class="${classP(RUN.reuse.second)}">P${RUN.reuse.second}</span>. `
+      +(RUN.invViol?`<span style="color:#ffd479">⚠ invariant violated (P${RUN.invViol.oid} was ${RUN.invViol.val}&gt;d behind P${RUN.invViol.kid})</span>`:`Delivery invariant ≤ d held throughout (result trustworthy).`);
+  } else {sb.className="status clean";
+    sb.innerHTML=`No reuse. ${RUN.events.length} events, ${RUN.usedTotal} pads used. Invariant ≤ d: ${RUN.invViol?'VIOLATED':'held'}.`;}
+  // scrub
+  const sc=$("scrub");sc.max=RUN.events.length-1;sc.value=SEL;
+  renderLog();renderStep();
+}
+
+function passFilter(e){
+  const fp=[...document.querySelectorAll('.fp:checked')].map(c=>c.value);
+  const ft=[...document.querySelectorAll('.ft:checked')].map(c=>c.value);
+  if(e.type==="INIT")return true;
+  if(e.actor>=0 && !fp.includes(String(e.actor)))return false;
+  if(!ft.includes(e.type))return false;
+  return true;
+}
+function renderLog(){
+  const body=$("logBody");body.innerHTML="";
+  RUN.events.forEach((e,i)=>{
+    if(!passFilter(e))return;
+    const tr=document.createElement("tr");
+    tr.className=(i===SEL?"sel ":"")+(e.type==="REUSE"?"evReuse ":"")+(e.type==="JUMP"?"evJump ":"");
+    const ft=e.from!==undefined?`${e.from}${e.actor>=0&&RUN.events[i].snap.positions[e.actor]?'':''}→${e.to}`:"";
+    tr.innerHTML=`<td>${e.step}</td>`
+      +`<td class="${e.actor>=0?classP(e.actor):'mut'}">${e.actor>=0?'P'+e.actor:'—'}</td>`
+      +`<td>${e.type}</td>`
+      +`<td>${e.from!==undefined?e.from+'→'+e.to:''}</td>`
+      +`<td>${e.node!=null?'('+e.node+','+(e.node+1)+')':''}</td>`
+      +`<td class="mut">${e.note||''}</td>`;
+    tr.onclick=()=>{SEL=i;$("scrub").value=i;renderLog();renderStep();};
+    body.appendChild(tr);
+  });
+}
+
+function dirArrow(dir){return dir>0?'→':'←';}
+function renderViews(snap){
+  const box=$("views");box.innerHTML="";
+  for(const oid of [0,1,2,3]){
+    const v=snap.views[oid];const me=snap.positions[oid];
+    const div=document.createElement("div");div.className="view";
+    let html=`<h3 class="${classP(oid)}"><span class="dot b${oid}"></span>P${oid} @ ${me.pos}${dirArrow(me.dir)}${me.halted?' <span class="mut">(halted)</span>':''}</h3>`;
+    for(const k of [0,1,2,3]){ if(k==oid)continue; const o=v[k]; const st=snap.stale[oid][k];
+      html+=`<div class="row"><span class="${classP(k)}">P${k}</span>: believes @${o.pos}${dirArrow(o.dir)} `
+        +`<span class="buf">reserved[${o.buf.join(', ')}]</span> `
+        +`<span class="mut">· ${st} behind</span></div>`;
+    }
+    div.innerHTML=html;box.appendChild(div);
+  }
+}
+
+function renderStrip(snap){
+  const c=$("stripCanvas"),ctx=c.getContext("2d");const n=RUN.n;
+  const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
+  // we don't have full used-set per snapshot (only count); draw positions + buffers
+  const x=p=>Math.round((p-1)/(n-1)*(W-8))+4;
+  // baseline
+  ctx.strokeStyle="#2d333b";ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();
+  const cols=["#2563eb","#16a34a","#ea580c","#9333ea"];
+  // reserved buffers (thin ticks) per owner from P-of-view? draw union of all views' buffers faintly
+  for(const oid of [0,1,2,3]){const v=snap.views[oid];for(const k in v){const o=v[k];ctx.fillStyle=cols[k]+"55";
+    for(const b of o.buf){ctx.fillRect(x(b)-1,H/2-8,2,16);}}}
+  // true positions (solid)
+  for(const id of [0,1,2,3]){const p=snap.positions[id];ctx.fillStyle=cols[id];
+    const px=x(p.pos);ctx.beginPath();ctx.arc(px,H/2,6,0,7);ctx.fill();
+    ctx.fillStyle="#fff";ctx.font="9px monospace";ctx.fillText("P"+id,px-6,H/2-10);
+    ctx.fillStyle=cols[id];ctx.font="9px monospace";ctx.fillText(p.pos+(p.dir>0?"→":"←"),px-10,H/2+18);}
+}
+
+function renderStep(){
+  const e=RUN.events[SEL];const snap=e.snap;
+  $("scrubLbl").textContent=`${SEL} / ${RUN.events.length-1}  (step ${e.step}${e.actor>=0?', P'+e.actor+' '+e.type:''})`;
+  renderViews(snap);renderStrip(snap);
+}
+
+$("run").onclick=run;
+$("scrub").oninput=e=>{SEL=+e.target.value;renderLog();renderStep();};
+document.querySelectorAll('.fp,.ft').forEach(c=>c.onchange=renderLog);
+// autorun with defaults (reproduces the reuse)
+run();
+</script>
+</body>
+</html>
