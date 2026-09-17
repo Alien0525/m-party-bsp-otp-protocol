@@ -62,7 +62,7 @@
   <div class="controls">
     <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="256" min="16" style="width:90px"></div>
     <div class="fld"><label>d (buffer)</label><input id="inD" type="number" value="2" min="1" style="width:70px"></div>
-    <div class="fld"><label>seed</label><input id="inSeed" type="number" value="57" style="width:80px"></div>
+    <div class="fld"><label>seed</label><input id="inSeed" type="number" value="81" style="width:80px"></div>
     <div class="fld"><label>delivery</label>
       <select id="inMode">
         <option value="worst" selected>worst (latest legal)</option>
@@ -188,11 +188,17 @@ function jumpTarget(dir,blocked,n,d,nodes){
     const left=M,right=M+1; if(right>n) continue;
     if(blocked.has(left)&&blocked.has(right)) continue;   // fully occupied -> descend
     const cand = dir===+1 ? right : left;
-    if(blocked.has(cand)) continue;
-    if(clearance(cand,+1,blocked,n)>d && clearance(cand,-1,blocked,n)>d) return cand;
+    if(blocked.has(cand)) continue;                       // my slot taken -> descend
+    // Clearance must be measured OUTSIDE the node's own two pads: a partner
+    // (opposite-direction mover) sitting on the other slot is by design, not an
+    // obstacle. Require > d free pads beyond M (left) and beyond M+1 (right).
+    if(clearOutside(left,-1,blocked,n) > 2*d && clearOutside(right,+1,blocked,n) > 2*d) return cand;
   }
   return null;                                            // no valid node -> halt
 }
+// count free pads starting at (edge+step), moving in `step`, i.e. just OUTSIDE
+// the node pad `edge`.
+function clearOutside(edge,step,blocked,n){let c=0,q=edge+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
 
 function clearance(p,step,blocked,n){let c=0,q=p+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
 
@@ -262,7 +268,8 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     const positions={};for(const p of w.parties)positions[p.id]={pos:p.pos,dir:p.dir,halted:p.halted};
     const vv={};for(const o of w.parties){vv[o.id]={};for(const [k,ov] of views.get(o.id).others)vv[o.id][k]={pos:ov.pos,dir:ov.dir,buf:ov.buf.slice()};}
     const stale={};for(const o of w.parties){stale[o.id]={};for(const k of w.parties)if(k.id!==o.id)stale[o.id][k.id]=sent[k.id].length-heard[o.id][k.id];}
-    return {positions,views:vv,stale,used:w.used.size};
+    const usedArr=[...w.used];   // [[pad,owner],...]
+    return {positions,views:vv,stale,used:w.used.size,usedArr};
   }
   let steps=0,reuse=null;
   events.push({step:0,type:"INIT",actor:-1,note:"initial",snap:snapshot()});
@@ -302,6 +309,7 @@ function run(){
   const n=+$("inN").value,d=+$("inD").value,seed=+$("inSeed").value,mode=$("inMode").value,pick=$("inPick").value,max=+$("inMax").value;
   RUN=simulate(n,d,seed,mode,pick,max);
   SEL=RUN.events.length-1;
+  RUN.reusePad = RUN.reuse ? RUN.reuse.pad : null;
   // status
   const sb=$("statusBox");
   if(RUN.reuse){sb.className="status reuse";
@@ -359,14 +367,20 @@ function renderViews(snap){
 function renderStrip(snap){
   const c=$("stripCanvas"),ctx=c.getContext("2d");const n=RUN.n;
   const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
-  // we don't have full used-set per snapshot (only count); draw positions + buffers
   const x=p=>Math.round((p-1)/(n-1)*(W-8))+4;
+  const cols=["#2563eb","#16a34a","#ea580c","#9333ea"];
+  // consumed pads (history), colored faintly by owner
+  if(snap.usedArr){for(const [pad,owner] of snap.usedArr){const c=(owner==='used'||typeof owner!=='number')?"#888":cols[owner];
+    ctx.fillStyle=c+"44";ctx.fillRect(x(pad),H/2+8,Math.max(1,(W-8)/(n-1)),8);}}
   // baseline
   ctx.strokeStyle="#2d333b";ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();
-  const cols=["#2563eb","#16a34a","#ea580c","#9333ea"];
-  // reserved buffers (thin ticks) per owner from P-of-view? draw union of all views' buffers faintly
+  // reserved buffers (thin ticks) per owner, faint, above the line
   for(const oid of [0,1,2,3]){const v=snap.views[oid];for(const k in v){const o=v[k];ctx.fillStyle=cols[k]+"55";
     for(const b of o.buf){ctx.fillRect(x(b)-1,H/2-8,2,16);}}}
+  // reuse marker: bright red X at the reused pad
+  if(RUN.reusePad!=null){const px=x(RUN.reusePad);ctx.strokeStyle="#ef4444";ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(px-6,H/2-12);ctx.lineTo(px+6,H/2+12);ctx.moveTo(px+6,H/2-12);ctx.lineTo(px-6,H/2+12);ctx.stroke();ctx.lineWidth=1;
+    ctx.fillStyle="#ef4444";ctx.font="9px monospace";ctx.fillText("reuse "+RUN.reusePad,px-16,H/2-16);}
   // true positions (solid)
   for(const id of [0,1,2,3]){const p=snap.positions[id];ctx.fillStyle=cols[id];
     const px=x(p.pos);ctx.beginPath();ctx.arc(px,H/2,6,0,7);ctx.fill();

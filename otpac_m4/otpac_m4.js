@@ -1,151 +1,154 @@
 "use strict";
-// ===========================================================================
-// Asynchronous m=4 OTPAC simulator -- INDIVIDUAL-JUMP design.
-//
-// Core ideas (from Aman + Giovanni meetings):
-//  * Jumps are per-PARTY, not per-pair. Whoever needs more pads jumps alone;
-//    a party that stops just stays put.
-//  * Every party keeps its OWN local view of every other party: for party k it
-//    stores k's confirmed pos, dir, and a d-length buffer = the next d pad
-//    indices k might use (unheard-of), computed by a jump-aware successor.
-//  * DIRECTION IS PRESERVED on a solo jump into free space. When two parties
-//    resolve to the same root-most region they split it: M (facing left) and
-//    M+1 (facing right) -- the only place direction can flip, so two movers are
-//    at worst adjacent, never on the same pad.
-//  * A jumpspot M is only offered while it has > d clearance on both sides in
-//    the mover's own view; once a host creeps too close, M is no longer offered
-//    and the successor re-targets the next root-most legal region.
-//  * Delivery: per-recipient sliding bound -- a message to r is force-delivered
-//    before r's own (d+1)-th subsequent Send. Each recipient delays on its own
-//    clock, so views of the same party legitimately differ (by <= d).
-//
-// Security: no pad index emitted by two Send events. Halt+report on any dup.
-// Also assert: no observer-pair's view of a party diverges by > d; no Send
-// writes a pad currently reserved (in the sender's own view) for another party.
-// ===========================================================================
+const E = require("./otpac_m4.js");
 
-// ---- static BSP midpoints over [1..n], root-first (largest cell first) ----
-function bspNodes(n) {
-  const out = [];
-  const q = [[1, n]];
-  while (q.length) {
-    const [L, R] = q.shift();
-    const M = (L + R) >> 1;
-    if (M > L && M < R) { out.push(M); if (R - L >= 2) { q.push([L, M - 1]); q.push([M + 1, R]); } }
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+// Build the initial per-party views from the true world.
+function initViews(w) {
+  const views = new Map();
+  for (const me of w.parties) {
+    const others = new Map();
+    for (const k of w.parties) if (k.id !== me.id)
+      others.set(k.id, { pos: k.pos, dir: k.dir, buf: [] });
+    const v = { self: { pos: me.pos, dir: me.dir }, others, used: new Set() };
+    for (const k of w.parties) if (k.id !== me.id) E.refreshBuffer(v, k.id, w.n, w.d, w.nodes);
+    views.set(me.id, v);
   }
-  return out;                       // in breadth-first (root-most) order
+  return views;
 }
 
-// ---------------------------------------------------------------------------
-// A "world" = the ground truth: each party's true pos, dir, halted, used pads.
-// A "view"  = one observer's belief about the other parties (pos/dir/buffer).
-// ---------------------------------------------------------------------------
-function initWorld(n, d, m = 4) {
-  // m parties in m/2 facing pairs across equal arenas, exactly like the paper.
-  const parties = [];
-  const arenas = m / 2, aw = Math.floor(n / arenas);
-  for (let a = 0; a < arenas; a++) {
-    const L = a * aw + 1, R = (a === arenas - 1) ? n : (a + 1) * aw;
-    parties.push({ id: 2 * a,     pos: L, dir: +1, halted: false, sent: 0, started: false });
-    parties.push({ id: 2 * a + 1, pos: R, dir: -1, halted: false, sent: 0, started: false });
+// One run. pick(w,step,rng) -> party id to Send next, or null to stop.
+function run(n, d, mode, seed, pick, maxSteps) {
+  const w = E.initWorld(n, d, 4);
+  const rng = mulberry32(seed);
+  const views = initViews(w);
+  const inflight = [];                 // {to, from, pad, dir, gseq}
+  let gclock = 0;                      // global send counter (event order)
+  let reuse = null, badWrite = null, diverge = null, steps = 0, maxUndel = 0;
+
+  const P = id => w.parties.find(p => p.id === id);
+
+  // Continuously enforce the family U_d: after EVERY send, no recipient may
+  // have more than d messages addressed to it still undelivered. We cap each
+  // recipient's queue by force-delivering the oldest until <= d remain. This
+  // holds the invariant at all times (in particular at every recipient's own
+  // send), so no observer's view of any party can be more than d sends stale.
+  function capQueues() {
+    for (const r of w.parties) {
+      let mine = inflight.filter(m => m.to === r.id).sort((a,b) => a.gseq - b.gseq);
+      const excess = mine.length - d;
+      if (excess <= 0) continue;
+      const del = new Set();
+      for (let i = 0; i < excess; i++) { applyReceive(r.id, mine[i]); del.add(mine[i]); }
+      const keep = inflight.filter(m => !del.has(m));
+      inflight.length = 0; inflight.push(...keep);
+    }
   }
-  return { n, d, m, parties, used: new Map(), nodes: bspNodes(n) };
+
+  // Opportunistic early delivery to rid before it sends (random/adversarial
+  // jitter). The hard <= d cap is maintained separately by capQueues().
+  function deliverBefore(rid) {
+    if (mode === "worst") return;                 // deliver as late as legal
+    let mine = inflight.filter(m => m.to === rid);
+    const del = new Set();
+    for (const m of mine) {
+      const pEarly = mode === "random" ? 0.5 : 0.10;
+      if (rng() < pEarly) { applyReceive(rid, m); del.add(m); }
+    }
+    if (del.size) { const keep = inflight.filter(m => !del.has(m)); inflight.length = 0; inflight.push(...keep); }
+  }
+
+  function applyReceive(rid, msg) {
+    const v = views.get(rid), o = v.others.get(msg.from);
+    if (!o) return;
+    // confirmed: move observer's belief of `from` up to the delivered pad,
+    // adopting the direction implied if it was a jump-landing.
+    o.pos = msg.pad; o.dir = msg.dir;
+    v.used.add(msg.pad);
+    E.refreshBuffer(v, msg.from, n, d, w.nodes);
+  }
+
+  while (steps < maxSteps) {
+    const who = pick(w, steps, rng);
+    if (who === null) break;
+    const me = P(who);
+    if (me.halted) { if (w.parties.every(p => p.halted)) break; steps++; continue; }
+    deliverBefore(who);                 // hear what we must before sending
+    const v = views.get(who);
+    v.self.pos = me.pos; v.self.dir = me.dir;
+
+    const nx = E.nextSlot(me.pos, me.dir, v, n, d, w.nodes);
+    steps++;
+    if (!nx) { me.halted = true; if (w.parties.every(p => p.halted)) break; continue; }
+
+    // assertion: we must not be about to write a pad reserved (in our own view)
+    // for another party.
+    const { reservedBy } = E.buildBlocked(v, n);
+    if (reservedBy.has(nx.pad)) { badWrite = { who, pad: nx.pad, resFor: reservedBy.get(nx.pad), step: steps }; break; }
+
+    // commit the send in ground truth
+    me.pos = nx.pad; if (nx.jumped) me.dir = nx.face; me.sent++; me.started = true;
+
+    if (w.used.has(nx.pad)) { reuse = { pad: nx.pad, first: w.used.get(nx.pad), second: who, step: steps }; break; }
+    w.used.set(nx.pad, who); gclock++;
+    views.get(who).used.add(nx.pad);
+
+    // broadcast to the other three
+    for (const k of w.parties) if (k.id !== who)
+      inflight.push({ to: k.id, from: who, pad: nx.pad, dir: me.dir, gseq: gclock });
+    capQueues();
+    for (const r of w.parties) { const c = inflight.filter(m=>m.to===r.id).length; if (c>maxUndel) maxUndel=c; }
+
+    // divergence check: any two observers' belief of the same party > d apart?
+    for (const target of w.parties) {
+      const beliefs = [];
+      for (const obs of w.parties) if (obs.id !== target.id) {
+        const o = views.get(obs.id).others.get(target.id); if (o) beliefs.push(o.pos);
+      }
+      if (beliefs.length) {
+        const spread = Math.max(...beliefs) - Math.min(...beliefs);
+        if (spread > d) { diverge = { target: target.id, spread, step: steps }; }
+      }
+    }
+  }
+  // flush
+  for (const msg of inflight) { const r = P(msg.to); if (r && !r.halted) applyReceive(msg.to, msg); }
+
+  return { n, d, mode, seed, used: w.used.size, ratio: w.used.size / n,
+           reuse, badWrite, diverge, maxUndel, positions: w.parties.map(p => `${p.id}@${p.pos}${p.dir>0?">":"<"}`) };
 }
 
-// occupancy predicate used by nextSlot, evaluated against a *view*:
-//   a pad is "blocked" if it's used, or reserved in this view for some party.
-function buildBlocked(view, n) {
-  // view.self = observer's own {pos,dir}; view.others = map id-> {pos,dir,buf[]}
-  const blocked = new Set();
-  const reservedBy = new Map();
-  for (const [id, o] of view.others) {
-    blocked.add(o.pos);
-    for (const b of o.buf) { blocked.add(b); if (!reservedBy.has(b)) reservedBy.set(b, id); }
-  }
-  blocked.add(view.self.pos);
-  // pads known to be already consumed (own history + heard-of others' sends):
-  // one-time pads can never be revisited, so they are obstacles for both a
-  // party's own moves and for generating any party's forward buffer.
-  if (view.used) for (const u of view.used) blocked.add(u);
-  return { blocked, reservedBy };
+// pickers
+function floodOne(w) { const p = w.parties.find(p => !p.halted); return p ? p.id : null; }
+function floodThenTwo(w, step) {          // party 0 floods a while, then party 1
+  const a = w.parties.find(p=>p.id===0), b = w.parties.find(p=>p.id===1);
+  if (a && !a.halted && a.sent < 400) return 0;
+  if (b && !b.halted) return 1;
+  const any = w.parties.find(p=>!p.halted); return any?any.id:null;
 }
+function roundRobin(w, step) { const live = w.parties.filter(p=>!p.halted); return live.length? live[step%live.length].id : null; }
+function randomPick(w, step, rng) { const live=w.parties.filter(p=>!p.halted); return live.length? live[Math.floor(rng()*live.length)].id : null; }
 
-// jump-aware successor: given a party's pos/dir and the observer view, return
-// the next pad the party would use, under the BUFFER-OVERLAP trigger model:
-//   1) linear step pos+dir IF it is not blocked AND the party's own d-buffer
-//      does not yet overlap another party's reserved buffer (i.e. the arena
-//      still has room: the linear pad keeps > d clearance to the facing block).
-//      A party walks its current arena down until only d free pads remain.
-//   2) once the arena is down to d (buffers overlap), the party JUMPS: it takes
-//      the next root-most BSP jumpspot -- M+1 if it is a right-mover, M if a
-//      left-mover -- provided that landing pad is free with > d clearance on
-//      both sides. Two opposite-direction jumpers to the same M therefore take
-//      M and M+1 (adjacent, never equal).
-// Returns { pad, jumped, face } or null (halt: no legal jumpspot anywhere).
-function nextSlot(pos, dir, view, n, d, nodes) {
-  const { blocked } = buildBlocked(view, n);
-  const lin = pos + dir;
-  // room left in the current arena ahead of us (free pads before a blocker):
-  const ahead = clearance(pos, dir, blocked, n);
-  if (lin >= 1 && lin <= n && !blocked.has(lin) && ahead > d) {
-    // still > d free pads ahead: keep walking the arena.
-    return { pad: lin, jumped: false, face: dir };
-  }
-  // arena down to <= d (buffers overlap): JUMP.
-  // A BSP node is the PAIR of center pads (M, M+1). It is a candidate jumpspot
-  // only if BOTH pads are still free (unconsumed AND unreserved) in this view --
-  // if either pad is taken (a party started there, walked over it, or already
-  // jumped onto it), every party skips the node and looks deeper. The shallowest
-  // such node is the target; a left-mover takes M, a right-mover takes M+1, so a
-  // left- and a right-mover completing the same node DIVERGE (never cross).
-  for (const M of nodes) {
-    const left = M, right = M + 1;
-    if (right > n) continue;
-    if (blocked.has(left) && blocked.has(right)) continue;   // fully occupied -> descend
-    const cand = dir === +1 ? right : left;                  // my direction's pad
-    if (blocked.has(cand)) continue;                         // my pad already taken
-    // valid only if > d free pads on BOTH sides of the landing pad (no party --
-    // including the observer itself -- within d on either side). Otherwise this
-    // node is too close to someone; go deeper for the next root-most node.
-    if (clearance(cand, +1, blocked, n) > d && clearance(cand, -1, blocked, n) > d)
-      return { pad: cand, jumped: true, face: dir };
-  }
-  return null;                             // nowhere legal to jump: halt
+if (require.main === module) {
+  console.log("=== SANITY: n=1000 d=5, party0 floods then party1 follows (worst-case delay) ===");
+  const r = run(1000, 5, "worst", 1, floodThenTwo, 100000);
+  console.log("used:", r.used, "ratio:", r.ratio.toFixed(4));
+  console.log("final positions:", r.positions.join("  "));
+  console.log("reuse:", r.reuse, "| badWrite:", r.badWrite, "| maxUndelivered:", r.maxUndel, "(must be <= d)");
+
+  console.log("\n=== SWEEP ===");
+  const Ns=[512,1024,4096], Ds=[1,2,5], modes=["worst","random","adversarial"];
+  const picks={flood:floodOne, floodThenTwo, roundRobin, random:randomPick};
+  let anyReuse=false, anyBad=false, anyDiv=false, rows=0;
+  console.log(["pick","mode","n","d","worstRatio","reuse","badWrite","diverge"].join("\t"));
+  for (const [pn,pf] of Object.entries(picks))
+    for (const mode of modes)
+      for (const n of Ns) for (const d of Ds) {
+        let wr=1, ru=false, bw=false, dv=false;
+        for (let s=0;s<6;s++){ const r=run(n,d,mode,s*97+3,pf,n*60);
+          wr=Math.min(wr,r.ratio); if(r.reuse){ru=true;anyReuse=true;} if(r.badWrite){bw=true;anyBad=true;} if(r.diverge){dv=true;anyDiv=true;} }
+        rows++;
+        console.log([pn,mode,n,d,wr.toFixed(4),ru,bw,dv].join("\t"));
+      }
+  console.log(`\nSummary: ${rows} configs | any reuse=${anyReuse} | any badWrite=${anyBad} | any diverge>d=${anyDiv}`);
 }
-
-// count consecutive free pads starting one step in `step` direction from p
-function clearance(p, step, blocked, n) {
-  let c = 0, q = p + step;
-  while (q >= 1 && q <= n && !blocked.has(q)) { c++; q += step; }
-  return c;
-}
-
-// ---------------------------------------------------------------------------
-// jump-aware buffer refresh for an OBSERVER's view of party k:
-// the buffer is k's next d pad indices, generated by repeatedly applying the
-// successor from k's confirmed pos. This is what every observer computes; two
-// observers differ only because their confirmed pos/used-set differ (by <= d).
-// ---------------------------------------------------------------------------
-function refreshBuffer(observerView, k, n, d, nodes) {
-  const ko = observerView.others.get(k);
-  let p = ko.pos, dir = ko.dir;
-  const buf = [];
-  // Obstacle set for generating k's OWN path must EXCLUDE k itself: a party's
-  // own current position and its own upcoming pads are not obstacles to it.
-  // Include only the OTHER tracked parties + the observer's self position.
-  const obstacleOthers = new Map();
-  for (const [id, o] of observerView.others) if (id !== k) obstacleOthers.set(id, o);
-  const tmp = { self: observerView.self, others: obstacleOthers, used: observerView.used };
-  for (let s = 0; s < d; s++) {
-    const nx = nextSlot(p, dir, tmp, n, d, nodes);
-    if (!nx) break;
-    buf.push(nx.pad);
-    p = nx.pad; if (nx.jumped) dir = nx.face;
-    // block this pad for subsequent successor calls within the same buffer build
-    tmp.others = new Map(tmp.others);
-    tmp.others.set("_tmp" + s, { pos: nx.pad, dir, buf: [] });
-  }
-  ko.buf = buf;
-}
-
-module.exports = { bspNodes, initWorld, nextSlot, clearance, refreshBuffer, buildBlocked };
