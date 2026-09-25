@@ -61,11 +61,10 @@ function run(n, d, mode, seed, pick, maxSteps) {
   function applyReceive(rid, msg) {
     const v = views.get(rid), o = v.others.get(msg.from);
     if (!o) return;
-    // confirmed: move observer's belief of `from` up to the delivered pad,
-    // adopting the direction implied if it was a jump-landing.
-    o.pos = msg.pad; o.dir = msg.dir;
-    v.used.add(msg.pad);
-    E.refreshBuffer(v, msg.from, n, d, w.nodes);
+    // confirmed: move observer's belief of `from` up to the delivered pad and
+    // re-validate ALL tracked parties' buffers (Rule 8), adopting the direction
+    // implied if it was a jump-landing.
+    E.deliverBuffer(v, msg.from, msg.pad, msg.dir, n, d, w.nodes);
   }
 
   while (steps < maxSteps) {

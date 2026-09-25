@@ -65,9 +65,15 @@
     <div class="fld"><label>seed</label><input id="inSeed" type="number" value="81" style="width:80px"></div>
     <div class="fld"><label>delivery</label>
       <select id="inMode">
-        <option value="worst" selected>worst (latest legal)</option>
+        <option value="instant">instant (synchronous)</option>
+        <option value="worst" selected>worst (latest legal, FIFO)</option>
         <option value="random">random (≤d)</option>
         <option value="adversarial">adversarial</option>
+        <option value="lifo">lifo (newest released first)</option>
+        <option value="randcap">randcap (random msg released)</option>
+        <option value="shuffle">shuffle (random early, random order)</option>
+        <option value="target-sender">target-sender (one sender delayed)</option>
+        <option value="target-recv">target-recv (one recipient delayed)</option>
       </select>
     </div>
     <div class="fld"><label>sender order</label>
@@ -75,6 +81,15 @@
         <option value="random" selected>random</option>
         <option value="rr">round-robin</option>
         <option value="flood">flood (P0 first)</option>
+        <option value="flood-rev">flood-rev (P3 first)</option>
+        <option value="skew">skew (one party 70%)</option>
+        <option value="arena-skew">arena-skew (one arena 80%)</option>
+        <option value="burst">burst (runs of up to 3d)</option>
+        <option value="silent1">silent1 (one party never sends)</option>
+        <option value="silent2">silent2 (two parties never send)</option>
+        <option value="pair-alt">pair-alt (one pair, then the other)</option>
+        <option value="greedy-gap">greedy-gap (closest-to-collision first)</option>
+        <option value="stale-max">stale-max (most-undelivered first)</option>
       </select>
     </div>
     <div class="fld"><label>max steps</label><input id="inMax" type="number" value="20000" style="width:100px"></div>
@@ -129,21 +144,22 @@
 "use strict";
 // ======================= ENGINE (identical to otpac_m4.js) =======================
 // ===========================================================================
-// Asynchronous m=4 OTPAC simulator -- INDIVIDUAL-JUMP design.  CLEAN REWRITE.
+// Asynchronous m=4 OTPAC simulator -- INDIVIDUAL-JUMP design.
 //
-// RULES (from Aman, verbatim intent):
-//  * Every party keeps, for every OTHER party K, a reserved buffer of the next
-//    d pads K will consume along K's path.
-//  * WALK-vs-JUMP trigger (Rule A): a party at pos,dir tries pos+dir. If that
-//    pad is free -> walk. If pos+dir is reserved-for-another-party or used
-//    (no way forward) -> JUMP this step (exactly at the overlap, never d away).
-//  * PREDICTING K's jump (Rule B): when extending K's reserved buffer one pad
-//    at a time, if the next pad K would take is already reserved-for-another
-//    (or used), then K has no way forward -> assume K JUMPS; reserve K's jump
-//    target and continue reserving from the landing (buffer spans the jump).
-//  * JUMP TARGET, deterministic so all parties agree: the root-most BSP node
-//    (M,M+1) that is not fully occupied and whose default-by-direction side is
-//    free.  Right-mover -> M+1.  Left-mover -> M.  Computed from occupancy only.
+// RULES:
+//  1. Own Send / security: use pos+dir only if it is in NO reserved buffer and
+//     not used; else jump; else halt.
+//  2. Jump target = BSP node (M,M+1); right-mover -> M+1, left-mover -> M;
+//     direction preserved; root-most not-fully-occupied node.
+//  3. Jump validity: >2d free pads on BOTH sides measured OUTSIDE the node.
+//  4. Buffers are RECOMPUTED fresh (self-cleaning) on any occupancy change.
+//  5. Reservations are DISJOINT: a pad reserved for one party is not reserved
+//     for another (prediction treats others' buffers as obstacles too).
+//  6. Speculative-jumpspot invalidation: a jumpspot is produced only while it
+//     passes Rule 3; an approaching party that breaks its clearance (with no
+//     confirmed jump) makes the next recompute drop it.
+//  7. On every Receive, re-validate ALL tracked parties' buffers, not just the
+//     sender's.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -220,48 +236,140 @@ function nextSlot(pos,dir,view,n,d,nodes){
   return stepOf(pos,dir,blocked,n,d,nodes);
 }
 
-// --- refresh observer's reserved buffer for party K: K's next d pads, rolling --
-// onto K's jump target at the overlap (Rule B).  Obstacles = everyone EXCEPT K
-// (K's own pos/pads are not obstacles to K), plus used pads, plus the pads we
-// are generating for K in this pass (so K doesn't reserve the same pad twice).
+// --- reservedBy: pads reserved for SOME OTHER party (driver badWrite assertion).
+function buildBlocked(view,n){
+  const reservedBy=new Map();
+  for(const [id,o] of view.others){
+    if(typeof id!=="number") continue;
+    for(const b of o.buf){ if(!reservedBy.has(b)) reservedBy.set(b,id); }
+  }
+  return {reservedBy};
+}
+
+// --- PREDICTION occupancy for party K: used pads + other parties' confirmed
+// positions + observer's own pos + other parties' reserved buffers, so a pad
+// reserved for another party is NOT reserved again for K (reservations are
+// DISJOINT). Stale jumpspots are still handled by fresh recompute + validity
+// (Rules 4,6). `extra` = pads already placed in K's buffer this pass.
+function predBlocked(view,k,extra){
+  const blocked=new Set();
+  if(view.used) for(const u of view.used) blocked.add(u);
+  for(const [id,o] of view.others){
+    if(id===k||typeof id!=="number") continue;
+    blocked.add(o.pos);
+    for(const b of o.buf) blocked.add(b);   // disjoint reservations
+  }
+  blocked.add(view.self.pos);
+  if(extra) for(const e of extra) blocked.add(e);
+  return blocked;
+}
+
+// --- RECOMPUTE K's reserved buffer FRESH (Rule 4, self-cleaning): K's next d
+// pads from K's confirmed pos, jump-aware, against GENUINE WALLS only (Rule 5),
+// using only CURRENTLY-VALID jumpspots. A jumpspot another party has since
+// invalidated is not reproduced; if K's path is blocked with no valid jumpspot,
+// K halts and nothing phantom is reserved.
 function refreshBuffer(observerView,k,n,d,nodes){
   const ko=observerView.others.get(k);
+  if(!ko) return;
   let p=ko.pos, dir=ko.dir;
   const buf=[];
-  // Build a mini-view representing K's own perspective as this observer models it:
-  // all OTHER tracked parties are obstacles to K; K itself is not.
-  const others=new Map();
-  for(const [id,o] of observerView.others) if(id!==k) others.set(id,o);
-  const gen={ self:{pos:observerView.self.pos,dir:observerView.self.dir}, others, used:observerView.used };
-  const extra=new Set();                         // pads already reserved for K this pass
   for(let s=0;s<d;s++){
-    const {blocked}=occupancy(gen);
-    for(const e of extra) blocked.add(e);        // K won't reuse its own just-reserved pads
+    const blocked=predBlocked(observerView,k,buf);
     const st=stepOf(p,dir,blocked,n,d,nodes);
     if(!st) break;
-    buf.push(st.pad); extra.add(st.pad);
+    buf.push(st.pad);
     p=st.pad; if(st.jumped) dir=st.face;
   }
   ko.buf=buf;
 }
 
+// --- RECEIVE (Rules 7-8): record the pad used, advance the sender's confirmed
+// position, then RE-VALIDATE EVERY tracked party's buffer, because this move may
+// invalidate another party's speculative jumpspot or free pads it can now
+// reserve linearly.
+function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes){
+  const o=observerView.others.get(fromId);
+  if(!o) return;
+  if(observerView.used) observerView.used.add(pad);
+  o.pos=pad; if(dir!==undefined) o.dir=dir;
+  for(const [id] of observerView.others){ if(typeof id==="number") refreshBuffer(observerView,id,n,d,nodes); }
+}
+
 // ======================= DRIVER (matches finalcap.js exactly) =======================
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 
+// Driver = identical logic (and RNG call order) to otpac_test_suite.js, so any
+// case from the suite (n,d,seed,mode,schedule) replays here exactly.
+// Delivery modes (all keep <= d undelivered per recipient):
+//   instant, worst, random, adversarial, lifo, randcap, shuffle, target-sender, target-recv
+// Sender schedules: random, rr, flood, flood-rev, skew, arena-skew, burst,
+//   silent1, silent2, pair-alt, greedy-gap, stale-max
+// HALT-ON-REUSE: if a party is about to use an already-used pad, the whole
+// protocol halts before that send; all unused pads count as wasted.
 function simulate(n,d,seed,mode,pick,maxSteps){
+  const sched=pick;
   const w=initWorld(n,d,4);const rng=mulberry32(seed);
+  const aux=mulberry32(((seed*2654435761)>>>0) ^ 0x5bd1e995);
+  const ids=w.parties.map(p=>p.id);const P=id=>w.parties.find(p=>p.id===id);
+  const targetParty=ids[Math.floor(aux()*4)], fav=ids[Math.floor(aux()*4)], favArena=Math.floor(aux()*2);
+  const sil1=ids[Math.floor(aux()*4)], sil2=ids[(ids.indexOf(sil1)+1+Math.floor(aux()*3))%4];
+  const silent=new Set(sched==="silent1"?[sil1]:sched==="silent2"?[sil1,sil2]:[]);
+  const firstPair=Math.floor(aux()*2);
   const sent={0:[],1:[],2:[],3:[]};const heard={};
   for(const o of w.parties){heard[o.id]={};for(const k of w.parties)if(k.id!==o.id)heard[o.id][k.id]=0;}
   const views=new Map();
   for(const me of w.parties){const others=new Map();for(const k of w.parties)if(k.id!==me.id)others.set(k.id,{pos:k.pos,dir:k.dir,buf:[]});
     const v={self:{pos:me.pos,dir:me.dir},others,used:new Set()};
     for(const k of w.parties)if(k.id!==me.id)refreshBuffer(v,k.id,n,d,w.nodes);views.set(me.id,v);}
-  const inflight=[];let g=0;const P=id=>w.parties.find(p=>p.id===id);
-  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;o.pos=m.pad;o.dir=m.dir;v.used.add(m.pad);refreshBuffer(v,m.from,n,d,w.nodes);heard[rid][m.from]++;}
-  function deliverBefore(rid){ if(mode==="worst")return; const del=new Set();
-    for(const m of inflight.filter(m=>m.to===rid)){const pe=mode==="random"?0.5:0.1;if(rng()<pe){applyRecv(rid,m);del.add(m);}}
-    if(del.size){const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);} }
-  function capQueues(){for(const r of w.parties){let mine=inflight.filter(m=>m.to===r.id).sort((a,b)=>a.gseq-b.gseq);const ex=mine.length-d;if(ex<=0)continue;const del=new Set();for(let i=0;i<ex;i++){applyRecv(r.id,mine[i]);del.add(mine[i]);}const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);}}
+  const inflight=[];let g=0;
+  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes);heard[rid][m.from]++;}
+  function removeSet(del){if(!del.size)return;const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);}
+  function deliverBefore(rid){
+    if(mode==="random"||mode==="adversarial"){const pe=mode==="random"?0.5:0.1;const del=new Set();
+      for(const m of inflight.filter(m=>m.to===rid)){if(rng()<pe){applyRecv(rid,m);del.add(m);}}removeSet(del);}
+    else if(mode==="shuffle"){const mine=inflight.filter(m=>m.to===rid);
+      for(let i=mine.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[mine[i],mine[j]]=[mine[j],mine[i]];}
+      const del=new Set();for(const m of mine){if(rng()<0.3){applyRecv(rid,m);del.add(m);}}removeSet(del);}
+  }
+  function deliverAfterSend(){
+    if(mode==="instant"){const all=inflight.slice();for(const m of all)applyRecv(m.to,m);inflight.length=0;return;}
+    if(mode==="target-sender"){const del=new Set();for(const m of inflight)if(m.from!==targetParty){applyRecv(m.to,m);del.add(m);}removeSet(del);return;}
+    if(mode==="target-recv"){const del=new Set();for(const m of inflight)if(m.to!==targetParty){applyRecv(m.to,m);del.add(m);}removeSet(del);return;}
+  }
+  const capPolicy=(mode==="lifo"||mode==="target-sender"||mode==="target-recv")?"newest":(mode==="randcap"||mode==="shuffle")?"random":"oldest";
+  function capQueues(){for(const r of w.parties){let mine=inflight.filter(m=>m.to===r.id);let ex=mine.length-d;if(ex<=0)continue;const del=new Set();
+    if(capPolicy==="oldest"){mine.sort((a,b)=>a.gseq-b.gseq);for(let i=0;i<ex;i++){applyRecv(r.id,mine[i]);del.add(mine[i]);}}
+    else if(capPolicy==="newest"){mine.sort((a,b)=>b.gseq-a.gseq);for(let i=0;i<ex;i++){applyRecv(r.id,mine[i]);del.add(mine[i]);}}
+    else{while(ex>0){const cand=mine.filter(m=>!del.has(m));const m=cand[Math.floor(rng()*cand.length)];applyRecv(r.id,m);del.add(m);ex--;}}
+    removeSet(del);}}
+  let burstParty=null,burstLeft=0,pairTurn=0;
+  function pickNext(steps){
+    const live=w.parties.filter(p=>!p.halted&&!silent.has(p.id));if(!live.length)return null;
+    const uni=()=>live[Math.floor(rng()*live.length)];
+    switch(sched){
+      case "random":return uni();
+      case "rr":return live[steps%live.length];
+      case "flood":return live[0];
+      case "flood-rev":return live[live.length-1];
+      case "skew":{const f=live.find(p=>p.id===fav);return(f&&rng()<0.7)?f:uni();}
+      case "arena-skew":{const inA=live.filter(p=>Math.floor(p.id/2)===favArena),out=live.filter(p=>Math.floor(p.id/2)!==favArena);
+        if(inA.length&&(rng()<0.8||!out.length))return inA[Math.floor(rng()*inA.length)];return out.length?out[Math.floor(rng()*out.length)]:uni();}
+      case "burst":{if(burstParty&&!burstParty.halted&&burstLeft>0){burstLeft--;return burstParty;}burstParty=uni();burstLeft=Math.floor(rng()*3*d);return burstParty;}
+      case "silent1":case "silent2":return uni();
+      case "pair-alt":{const pairs=firstPair===0?[[0,1],[2,3]]:[[2,3],[0,1]];
+        for(const pr of pairs){const lp=pr.map(P).filter(p=>!p.halted&&!silent.has(p.id));if(lp.length){pairTurn++;return lp[pairTurn%lp.length];}}return uni();}
+      case "greedy-gap":{let best=[],bestGap=Infinity;
+        for(const p of live){let gap=p.dir>0?(n-p.pos):(p.pos-1);for(const q of w.parties){if(q===p)continue;const s=(q.pos-p.pos)*p.dir;if(s>0&&s<gap)gap=s;}
+          if(gap<bestGap){bestGap=gap;best=[p];}else if(gap===bestGap)best.push(p);}
+        return best[Math.floor(rng()*best.length)];}
+      case "stale-max":{const cnt={};for(const p of live)cnt[p.id]=0;for(const m of inflight)if(cnt[m.from]!==undefined)cnt[m.from]++;
+        let mx=-1,best=[];for(const p of live){if(cnt[p.id]>mx){mx=cnt[p.id];best=[p];}else if(cnt[p.id]===mx)best.push(p);}
+        return best[Math.floor(rng()*best.length)];}
+      default:return uni();
+    }
+  }
+  const roles={target:(mode==="target-sender"||mode==="target-recv")?targetParty:null,silent:[...silent]};
 
   const events=[];
   function snapshot(){
@@ -274,22 +382,19 @@ function simulate(n,d,seed,mode,pick,maxSteps){
   let steps=0,reuse=null;
   events.push({step:0,type:"INIT",actor:-1,note:"initial",snap:snapshot()});
   while(steps<maxSteps){
-    const live=w.parties.filter(p=>!p.halted);if(!live.length)break;
-    let me;
-    if(pick==="random")me=live[Math.floor(rng()*live.length)];
-    else if(pick==="rr")me=live[steps%live.length];
-    else me=live[0];
+    const me=pickNext(steps);if(!me)break;
     const prev=me.pos,pdir=me.dir;
-    if(mode!=="worst")deliverBefore(me.id);
+    deliverBefore(me.id);
     const v=views.get(me.id);v.self.pos=me.pos;v.self.dir=me.dir;
     const nx=nextSlot(me.pos,me.dir,v,n,d,w.nodes);steps++;
     if(!nx){me.halted=true;events.push({step:steps,type:"HALT",actor:me.id,from:prev,to:prev,note:"no legal jumpspot",snap:snapshot()});continue;}
-    if(w.used.has(nx.pad)){reuse={pad:nx.pad,first:w.used.get(nx.pad),second:me.id,step:steps};
+    if(w.used.has(nx.pad)){reuse={pad:nx.pad,first:w.used.get(nx.pad),second:me.id,step:steps,wasted:n-w.used.size};
       events.push({step:steps,type:"REUSE",actor:me.id,from:prev,to:nx.pad,jumped:nx.jumped,node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,
-        note:`pad ${nx.pad} already used by P${w.used.get(nx.pad)}`,snap:snapshot()});break;}
+        note:`would reuse pad ${nx.pad} (used by P${w.used.get(nx.pad)}) -> protocol HALTED, ${n-w.used.size} pads wasted`,snap:snapshot()});break;}
     me.pos=nx.pad;if(nx.jumped)me.dir=nx.face;me.sent++;
     w.used.set(nx.pad,me.id);g++;v.used.add(nx.pad);sent[me.id].push(nx.pad);
     for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g});
+    deliverAfterSend();
     capQueues();
     events.push({step:steps,type:nx.jumped?"JUMP":"WALK",actor:me.id,from:prev,to:nx.pad,
       node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,note:nx.jumped?`node (${(pdir>0?nx.pad-1:nx.pad)},${(pdir>0?nx.pad-1:nx.pad)+1})`:"",snap:snapshot()});
@@ -297,7 +402,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
   // verify invariant
   let invViol=null;
   for(const e of events){const s=e.snap;for(const oid in s.stale)for(const kid in s.stale[oid])if(s.stale[oid][kid]>d){invViol={oid,kid,val:s.stale[oid][kid],step:e.step};break;}}
-  return {n,d,seed,mode,pick,events,reuse,invViol,usedTotal:w.used.size};
+  return {n,d,seed,mode,pick,events,reuse,invViol,usedTotal:w.used.size,eff:w.used.size/n,roles};
 }
 
 // ======================= UI =======================
@@ -312,11 +417,13 @@ function run(){
   RUN.reusePad = RUN.reuse ? RUN.reuse.pad : null;
   // status
   const sb=$("statusBox");
+  const rolesTxt=(RUN.roles&&RUN.roles.target!=null?` · delayed party: P${RUN.roles.target}`:"")+(RUN.roles&&RUN.roles.silent.length?` · silent: ${RUN.roles.silent.map(p=>"P"+p).join(", ")}`:"");
+  const effTxt=`efficiency <strong>${(RUN.eff*100).toFixed(2)}%</strong> (${RUN.usedTotal}/${n} pads used, ${n-RUN.usedTotal} wasted)`;
   if(RUN.reuse){sb.className="status reuse";
-    sb.innerHTML=`<strong>REUSE</strong> at step ${RUN.reuse.step}: pad <code>${RUN.reuse.pad}</code> used first by <span class="${classP(RUN.reuse.first)}">P${RUN.reuse.first}</span>, then by <span class="${classP(RUN.reuse.second)}">P${RUN.reuse.second}</span>. `
-      +(RUN.invViol?`<span style="color:#ffd479">⚠ invariant violated (P${RUN.invViol.oid} was ${RUN.invViol.val}&gt;d behind P${RUN.invViol.kid})</span>`:`Delivery invariant ≤ d held throughout (result trustworthy).`);
+    sb.innerHTML=`<strong>HALTED at would-be reuse</strong> (step ${RUN.reuse.step}): <span class="${classP(RUN.reuse.second)}">P${RUN.reuse.second}</span> was about to use pad <code>${RUN.reuse.pad}</code>, already used by <span class="${classP(RUN.reuse.first)}">P${RUN.reuse.first}</span>. Protocol stopped; all unused pads wasted → ${effTxt}${rolesTxt}. `
+      +(RUN.invViol?`<span style="color:#ffd479">⚠ invariant violated (P${RUN.invViol.oid} was ${RUN.invViol.val}&gt;d behind P${RUN.invViol.kid})</span>`:`Delivery invariant ≤ d held throughout.`);
   } else {sb.className="status clean";
-    sb.innerHTML=`No reuse. ${RUN.events.length} events, ${RUN.usedTotal} pads used. Invariant ≤ d: ${RUN.invViol?'VIOLATED':'held'}.`;}
+    sb.innerHTML=`No reuse. ${effTxt}${rolesTxt}. ${RUN.events.length} events. Invariant ≤ d: ${RUN.invViol?'VIOLATED':'held'}.`;}
   // scrub
   const sc=$("scrub");sc.max=RUN.events.length-1;sc.value=SEL;
   renderLog();renderStep();
