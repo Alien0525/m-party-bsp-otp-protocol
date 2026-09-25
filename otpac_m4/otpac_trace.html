@@ -160,6 +160,14 @@
 //     confirmed jump) makes the next recompute drop it.
 //  7. On every Receive, re-validate ALL tracked parties' buffers, not just the
 //     sender's.
+//  8. Message order (header carries a per-sender message #):
+//     (a) an OLDER message only marks its pad used -- it never moves the
+//         sender's believed position backward;
+//     (b) a NEWER message that skips k numbers means the sender used k pads on
+//         the way; those pads are marked occupied, carefully around jumps:
+//         only the reservation if the sender provably followed it, only the
+//         straight-line pads if it provably walked, and for an unforeseen jump
+//         every pad it could have used (see assumeSkipped).
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -284,16 +292,74 @@ function refreshBuffer(observerView,k,n,d,nodes){
   ko.buf=buf;
 }
 
-// --- RECEIVE (Rules 7-8): record the pad used, advance the sender's confirmed
-// position, then RE-VALIDATE EVERY tracked party's buffer, because this move may
-// invalidate another party's speculative jumpspot or free pads it can now
-// reserve linearly.
-function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes){
+// --- RECEIVE: observer hears party `fromId` used pad `pad` moving `dir`, in
+// that party's message number `num` (header = sender, pad, message #).
+//
+//   OLDER message (num <= highest # already received from this sender):
+//     only mark `pad` as used. The believed position/direction do NOT move
+//     (an older message must never move a party backward).
+//   NEWER message that skips k numbers (num = last + 1 + k):
+//     the party must have used k pads to get here, so the first k pads of the
+//     current reservation for it are ASSUMED OCCUPIED (marked used). Then the
+//     believed position/direction move to `pad`.
+//
+// Then RE-VALIDATE EVERY tracked party's buffer, because this move may have
+// invalidated another party's speculative jumpspot or freed pads it can now
+// reserve. (If `num` is omitted, falls back to the old behaviour: always move.)
+function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
   const o=observerView.others.get(fromId);
   if(!o) return;
   if(observerView.used) observerView.used.add(pad);
-  o.pos=pad; if(dir!==undefined) o.dir=dir;
+  const last=o.lastNum||0;
+  if(num===undefined || num>last){
+    if(num!==undefined){
+      const k=num-last-1;                                    // messages skipped
+      if(k>0) assumeSkipped(observerView,o,pad,k,n);
+      o.lastNum=num;
+    }
+    o.pos=pad; if(dir!==undefined) o.dir=dir;
+  }
+  // else: older message -> pad is marked used above; position stays where it is
   for(const [id] of observerView.others){ if(typeof id==="number") refreshBuffer(observerView,id,n,d,nodes); }
+}
+
+// --- Rule 8(b): party K sent k messages we have not received between its last
+// confirmed pad (o.pos) and `pad`. Mark as occupied the pads K used for them.
+// K's direction never changes (direction is preserved across jumps).
+//  (i)  PREDICTED: `pad` is the (k+1)-th pad of our current reservation for K, so K
+//       followed the predicted path (walks and any predicted jump) -> the first k
+//       reserved pads are certain.
+//  (ii) STRAIGHT WALK: pad = o.pos + (k+1)*dir. A jump can never land there (a
+//       landing needs >2d free pads around it), so K walked -> the k pads between
+//       are certain, whatever the reservation said.
+//  (iii) UNFORESEEN JUMP: K walked j pads (0<=j<=k), jumped, then walked into `pad`;
+//       j is unknown, so which pads K used is unknown. Policy (SKIP_JUMP_POLICY):
+//         "both"   (default) mark every pad K could have used: the k pads right
+//                  after o.pos and the k pads right before `pad` (<= k extra pads);
+//         "guided" guess j from our reservation's walk prefix (pads it predicted K
+//                  would walk before jumping) and mark only that guess;
+//         "none"   mark nothing.
+let SKIP_JUMP_POLICY="both";
+function setSkipJumpPolicy(p){ SKIP_JUMP_POLICY=p; }
+function assumeSkipped(view,o,pad,k,n){
+  const dir=o.dir, marks=[]; let kase;
+  if(o.buf.length>k && o.buf[k]===pad){ kase="predicted"; for(let i=0;i<k;i++) marks.push(o.buf[i]); }
+  else if(pad===o.pos+(k+1)*dir){ kase="straight"; for(let i=1;i<=k;i++) marks.push(o.pos+i*dir); }
+  else {
+    kase="jump";
+    if(SKIP_JUMP_POLICY==="both"){ for(let i=1;i<=k;i++){ marks.push(o.pos+i*dir); marks.push(pad-i*dir); } }
+    else if(SKIP_JUMP_POLICY==="guided"){
+      let j=0; while(j<k && j<o.buf.length && o.buf[j]===o.pos+(j+1)*dir) j++;   // predicted walks before the jump
+      for(let i=1;i<=j;i++) marks.push(o.pos+i*dir);                          // pre-jump walks
+      for(let i=1;i<=k-j;i++) marks.push(pad-i*dir);                           // landing + walks after it
+    }
+  }
+  for(const q of marks){
+    if(q<1||q>n) continue;
+    if(view.used) view.used.add(q);
+    (o.assumed=o.assumed||[]).push(q);                        // for display
+    (o.assumedLog=o.assumedLog||[]).push({pad:q,kase});       // for test statistics
+  }
 }
 
 // ======================= DRIVER (matches finalcap.js exactly) =======================
@@ -323,7 +389,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     const v={self:{pos:me.pos,dir:me.dir},others,used:new Set()};
     for(const k of w.parties)if(k.id!==me.id)refreshBuffer(v,k.id,n,d,w.nodes);views.set(me.id,v);}
   const inflight=[];let g=0;
-  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes);heard[rid][m.from]++;}
+  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);heard[rid][m.from]++;}
   function removeSet(del){if(!del.size)return;const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);}
   function deliverBefore(rid){
     if(mode==="random"||mode==="adversarial"){const pe=mode==="random"?0.5:0.1;const del=new Set();
@@ -374,7 +440,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
   const events=[];
   function snapshot(){
     const positions={};for(const p of w.parties)positions[p.id]={pos:p.pos,dir:p.dir,halted:p.halted};
-    const vv={};for(const o of w.parties){vv[o.id]={};for(const [k,ov] of views.get(o.id).others)vv[o.id][k]={pos:ov.pos,dir:ov.dir,buf:ov.buf.slice()};}
+    const vv={};for(const o of w.parties){vv[o.id]={};for(const [k,ov] of views.get(o.id).others)vv[o.id][k]={pos:ov.pos,dir:ov.dir,buf:ov.buf.slice(),assumed:(ov.assumed||[]).slice(-4)};}
     const stale={};for(const o of w.parties){stale[o.id]={};for(const k of w.parties)if(k.id!==o.id)stale[o.id][k.id]=sent[k.id].length-heard[o.id][k.id];}
     const usedArr=[...w.used];   // [[pad,owner],...]
     return {positions,views:vv,stale,used:w.used.size,usedArr};
@@ -393,7 +459,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
         note:`would reuse pad ${nx.pad} (used by P${w.used.get(nx.pad)}) -> protocol HALTED, ${n-w.used.size} pads wasted`,snap:snapshot()});break;}
     me.pos=nx.pad;if(nx.jumped)me.dir=nx.face;me.sent++;
     w.used.set(nx.pad,me.id);g++;v.used.add(nx.pad);sent[me.id].push(nx.pad);
-    for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g});
+    for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g,sseq:me.sent});
     deliverAfterSend();
     capQueues();
     events.push({step:steps,type:nx.jumped?"JUMP":"WALK",actor:me.id,from:prev,to:nx.pad,
@@ -465,6 +531,7 @@ function renderViews(snap){
     for(const k of [0,1,2,3]){ if(k==oid)continue; const o=v[k]; const st=snap.stale[oid][k];
       html+=`<div class="row"><span class="${classP(k)}">P${k}</span>: believes @${o.pos}${dirArrow(o.dir)} `
         +`<span class="buf">reserved[${o.buf.join(', ')}]</span> `
+        +(o.assumed&&o.assumed.length?`<span class="buf" title="pads assumed occupied because a newer message skipped them (Rule 8b)">assumed used[${o.assumed.join(', ')}]</span> `:'')
         +`<span class="mut">· ${st} behind</span></div>`;
     }
     div.innerHTML=html;box.appendChild(div);

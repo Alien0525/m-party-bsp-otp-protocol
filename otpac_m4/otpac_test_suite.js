@@ -2,7 +2,7 @@
 // ===========================================================================
 // OTPAC m=4 -- extended test suite (buffer-based, individual-jump engine).
 //
-// Uses the engine in ./otpac_m4.js unchanged. Adds:
+// Uses the engine in ./otpac_m4.js. Adds:
 //   * 9 delivery adversaries (all keep <= d undelivered per recipient, i.e. the
 //     run stays inside the paper's family U^{4,n}_{A,d}):
 //       instant, worst, random, adversarial   (first 3 = legacy, reproducible)
@@ -28,22 +28,22 @@
 //   node analyze_suite.js                    # after a full run: mechanisms + efficiency table
 // Results: suite_results.jsonl (one record per run) + printed summary.
 //
-// WHAT-IF EXPERIMENTS (test driver only; the engine otpac_m4.js is NOT changed;
-// both are OFF by default and are not part of the protocol until you decide):
-//   WHATIF_NO_REWIND=1 node otpac_test_suite.js
-//       a late OLDER message marks its pad used but does not move the sender's
-//       believed position backward (needs a per-sender send counter in the header).
-//   WHATIF_GAPPADS=1 node otpac_test_suite.js
-//       the above, plus: pads predicted for counters whose messages are still in
-//       flight stay reserved until those messages arrive (the paper's A4 invariant:
-//       an index leaves the buffer only when THAT message is received).
+// Messages carry the sender's message number (Rule 8 in otpac_m4.js).
+//   LEGACY_RECEIVE=1 node otpac_test_suite.js
+//       reproduces the OLD receive behaviour (no message number; the believed
+//       position always moves to the pad of whichever message arrived last),
+//       for before/after comparison. Output: suite_results_legacyreceive.jsonl
+//   SKIP_JUMP_POLICY=guided|none node otpac_test_suite.js
+//       alternative policies for Rule 8(b) case (iii), an unforeseen jump among the
+//       skipped messages (default "both"; see assumeSkipped in otpac_m4.js).
 // ===========================================================================
 const E = require("./otpac_m4.js");
 
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 
-const WHATIF_NO_REWIND = (process.env.WHATIF_NO_REWIND==="1");   // experiment flag, OFF by default
-const WHATIF_GAPPADS  = (process.env.WHATIF_GAPPADS==="1");      // experiment flag, OFF by default (implies no-rewind)
+const LEGACY_RECEIVE = (process.env.LEGACY_RECEIVE==="1");       // reproduce pre-Rule-8 behaviour (for comparison only)
+const SKIP_JUMP_POLICY = process.env.SKIP_JUMP_POLICY || "both";   // Rule 8(b) case (iii): both | guided | none
+E.setSkipJumpPolicy(SKIP_JUMP_POLICY);
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
@@ -85,42 +85,12 @@ function simulate(cfg){
   const padInfo = new Map();                             // pad -> {by, gseq, jumped}
   let lateOlder = 0;                                     // # deliveries of an OLDER msg after a newer one (same sender)
 
-  // --- WHAT-IF "gap pads" state (only used when WHATIF_GAPPADS=1) ---
-  // Each message carries the sender's own counter sseq. Per (observer,K): the
-  // highest counter received, the set received, the current FORWARD prediction
-  // (buf[i] <-> counter maxS+1+i), and FROZEN predictions for counters that were
-  // skipped (message still in flight) -- kept reserved until that message arrives.
-  const maxS={}, recvS={}, frozen={}, fwd={};
-  for(const o of ids){ maxS[o]={}; recvS[o]={}; frozen[o]={}; fwd[o]={};
-    for(const k of ids) if(k!==o){ maxS[o][k]=0; recvS[o][k]=new Set(); frozen[o][k]=new Map(); fwd[o][k]=views.get(o).others.get(k).buf.slice(); } }
-  let mispredict=0;                                      // late msg whose real pad != the frozen prediction
-  function syncGaps(v,rid){
-    for(const [K,o] of v.others){ fwd[rid][K]=o.buf.slice(); for(const [,p] of frozen[rid][K]) if(!o.buf.includes(p)) o.buf.push(p); }
-  }
-
   function applyRecv(rid,m){
     const v=views.get(rid); if(!v.others.get(m.from)) return;
-    if(WHATIF_GAPPADS){
-      const K=m.from, s=m.sseq; recvS[rid][K].add(s);
-      if(s>maxS[rid][K]){
-        for(let c=maxS[rid][K]+1;c<s;c++) if(!recvS[rid][K].has(c)){ const p=fwd[rid][K][c-maxS[rid][K]-1]; if(p!==undefined) frozen[rid][K].set(c,p); }
-        maxS[rid][K]=s;
-        E.deliverBuffer(v,K,m.pad,m.dir,n,d,w.nodes);
-      } else {
-        const fp=frozen[rid][K].get(s); if(fp!==undefined && fp!==m.pad) mispredict++;
-        frozen[rid][K].delete(s);
-        v.used.add(m.pad);
-        for(const [id] of v.others) E.refreshBuffer(v,id,n,d,w.nodes);
-      }
-      syncGaps(v,rid);
-    }
-    else if(WHATIF_NO_REWIND && m.gseq < maxRecv[rid][m.from]){
-      // WHAT-IF experiment only (env WHATIF_NO_REWIND=1; OFF by default): a late OLDER
-      // message still marks its pad used, but does not move the sender's believed
-      // position backward. Equivalent to carrying a per-sender send counter.
-      v.used.add(m.pad);
-      for(const [id] of v.others) E.refreshBuffer(v,id,n,d,w.nodes);
-    } else E.deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes);
+    // Rule 8: pass the sender's message number (m.sseq). With LEGACY_RECEIVE=1 the
+    // number is withheld, reproducing the old behaviour (position always moves to
+    // the pad of whichever message arrived last).
+    E.deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes, LEGACY_RECEIVE?undefined:m.sseq);
     if(m.gseq>maxRecv[rid][m.from]){ maxRecv[rid][m.from]=m.gseq; maxRecvPad[rid][m.from]=m.pad; }
     else lateOlder++;
   }
@@ -240,9 +210,13 @@ function simulate(cfg){
     deliverAfterSend();
     capQueues();
   }
+  // Rule 8(b) statistics: marks made per case, and how many were right (the party really used that pad)
+  const assume={predicted:{marks:0,right:0},straight:{marks:0,right:0},jump:{marks:0,right:0}};
+  for(const [,v] of views) for(const [K,o] of v.others){ if(!o.assumedLog) continue;
+    for(const e of o.assumedLog){ const st=assume[e.kase]; st.marks++; if(w.used.get(e.pad)===K) st.right++; } }
   const used = w.used.size;
-  return { n,d,seed,mode,sched, used, eff:used/n, wasted:n-used, steps, timeout:steps>=maxSteps,
-           reuse, badWrite, invViol, maxPending, lateOlder, mispredict };
+  return { assume, n,d,seed,mode,sched, used, eff:used/n, wasted:n-used, steps, timeout:steps>=maxSteps,
+           reuse, badWrite, invViol, maxPending, lateOlder };
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +261,7 @@ if(!isMainThread){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (WHATIF_GAPPADS ? "_whatif_gappads" : WHATIF_NO_REWIND ? "_whatif_norewind" : "") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);
@@ -309,6 +283,12 @@ function summarize(res){
   console.log("\n================ OVERALL ================");
   console.log(row("all runs",res));
   console.log(`invariant (<= d undelivered at every Send) violations: ${res.reduce((s,r)=>s+r.invViol,0)}  | max undelivered seen vs d: ${res.every(r=>r.maxPending<=r.d)?"always <= d":"EXCEEDED"}`);
+  if(res[0] && res[0].assume){
+    const A={predicted:{marks:0,right:0},straight:{marks:0,right:0},jump:{marks:0,right:0}};
+    for(const r of res) for(const k in A){ A[k].marks+=r.assume[k].marks; A[k].right+=r.assume[k].right; }
+    console.log(`Rule 8(b) assumed-occupied marks (policy for unforeseen jumps: ${SKIP_JUMP_POLICY}):`);
+    for(const k in A) console.log(`   ${k.padEnd(10)} marks=${String(A[k].marks).padStart(7)}  really used by that party=${String(A[k].right).padStart(7)}  phantom=${A[k].marks-A[k].right}`);
+  }
   console.log(`badWrite (sender picked a pad reserved in its own view): ${res.reduce((s,r)=>s+r.badWrite,0)}  | timeouts (liveness): ${res.filter(r=>r.timeout).length}`);
   console.log("\n---------------- by delivery mode ----------------");
   for(const [k,rs] of group(r=>r.mode)) console.log(row(k,rs));

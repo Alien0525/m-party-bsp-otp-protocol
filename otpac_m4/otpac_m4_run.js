@@ -64,7 +64,7 @@ function run(n, d, mode, seed, pick, maxSteps) {
     // confirmed: move observer's belief of `from` up to the delivered pad and
     // re-validate ALL tracked parties' buffers (Rule 8), adopting the direction
     // implied if it was a jump-landing.
-    E.deliverBuffer(v, msg.from, msg.pad, msg.dir, n, d, w.nodes);
+    E.deliverBuffer(v, msg.from, msg.pad, msg.dir, n, d, w.nodes, msg.sseq);   // msg.sseq = sender's message # (Rule 8)
   }
 
   while (steps < maxSteps) {
@@ -94,7 +94,7 @@ function run(n, d, mode, seed, pick, maxSteps) {
 
     // broadcast to the other three
     for (const k of w.parties) if (k.id !== who)
-      inflight.push({ to: k.id, from: who, pad: nx.pad, dir: me.dir, gseq: gclock });
+      inflight.push({ to: k.id, from: who, pad: nx.pad, dir: me.dir, gseq: gclock, sseq: me.sent });
     capQueues();
     for (const r of w.parties) { const c = inflight.filter(m=>m.to===r.id).length; if (c>maxUndel) maxUndel=c; }
 
