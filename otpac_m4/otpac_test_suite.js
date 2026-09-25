@@ -33,6 +33,9 @@
 //       reproduces the OLD receive behaviour (no message number; the believed
 //       position always moves to the pad of whichever message arrived last),
 //       for before/after comparison. Output: suite_results_legacyreceive.jsonl
+//   STICKY=0 / OPP_EXEMPT=0 node otpac_test_suite.js
+//       switch off Rule 9 (sticky walk reservations) / the back-side clearance
+//       exemption for opposite-direction reservations (both ON by default).
 //   SKIP_JUMP_POLICY=guided|none node otpac_test_suite.js
 //       alternative policies for Rule 8(b) case (iii), an unforeseen jump among the
 //       skipped messages (default "both"; see assumeSkipped in otpac_m4.js).
@@ -44,6 +47,9 @@ function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a
 const LEGACY_RECEIVE = (process.env.LEGACY_RECEIVE==="1");       // reproduce pre-Rule-8 behaviour (for comparison only)
 const SKIP_JUMP_POLICY = process.env.SKIP_JUMP_POLICY || "both";   // Rule 8(b) case (iii): both | guided | none
 E.setSkipJumpPolicy(SKIP_JUMP_POLICY);
+const STICKY = process.env.STICKY!=="0", OPP_EXEMPT = process.env.OPP_EXEMPT!=="0";   // Rules 9 and 3-refinement (default ON)
+const STICKY_JUMPS = process.env.STICKY_JUMPS==='1';   // comparison only: hold jump-predicted pads too (no Rule 6)
+E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
@@ -85,12 +91,16 @@ function simulate(cfg){
   const padInfo = new Map();                             // pad -> {by, gseq, jumped}
   let lateOlder = 0;                                     // # deliveries of an OLDER msg after a newer one (same sender)
 
+  // everRes[obs][K] = every pad that was ever in obs's reservation for K (diagnostic)
+  const everRes={}; for(const o of ids){ everRes[o]={}; for(const [K,ob] of views.get(o).others) everRes[o][K]=new Set(ob.buf); }
+  function noteRes(rid){ for(const [K,ob] of views.get(rid).others) for(const b of ob.buf) everRes[rid][K].add(b); }
   function applyRecv(rid,m){
     const v=views.get(rid); if(!v.others.get(m.from)) return;
     // Rule 8: pass the sender's message number (m.sseq). With LEGACY_RECEIVE=1 the
     // number is withheld, reproducing the old behaviour (position always moves to
     // the pad of whichever message arrived last).
     E.deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes, LEGACY_RECEIVE?undefined:m.sseq);
+    noteRes(rid);
     if(m.gseq>maxRecv[rid][m.from]){ maxRecv[rid][m.from]=m.gseq; maxRecvPad[rid][m.from]=m.pad; }
     else lateOlder++;
   }
@@ -200,6 +210,8 @@ function simulate(cfg){
                 rewound: maxRecvPad[me.id][info.by]!==null && v.others.get(info.by).pos!==maxRecvPad[me.id][info.by],
                 believedPos: v.others.get(info.by).pos, latestRecvPad: maxRecvPad[me.id][info.by],
                 bufForFirst: v.others.get(info.by).buf.slice(),
+                // was the contested pad reserved for the first user in the sender's view earlier, then released?
+                wasReservedForFirst: everRes[me.id][info.by].has(nx.pad),
                 pendingFromFirst, step:steps };
       break;
     }
@@ -261,7 +273,7 @@ if(!isMainThread){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"_stickyjumps":"") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);
