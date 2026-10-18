@@ -48,8 +48,10 @@ const LEGACY_RECEIVE = (process.env.LEGACY_RECEIVE==="1");       // reproduce pr
 const SKIP_JUMP_POLICY = process.env.SKIP_JUMP_POLICY || "both";   // Rule 8(b) case (iii): both | guided | none
 E.setSkipJumpPolicy(SKIP_JUMP_POLICY);
 const STICKY = process.env.STICKY!=="0", OPP_EXEMPT = process.env.OPP_EXEMPT!=="0";   // Rules 9 and 3-refinement (default ON)
-const STICKY_JUMPS = process.env.STICKY_JUMPS==='1';   // comparison only: hold jump-predicted pads too (no Rule 6)
-E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS});
+const STICKY_JUMPS = process.env.STICKY_JUMPS!=='0';   // hold jump-predicted pads too (default ON); STICKY_JUMPS=0 -> older Rule 6 behaviour
+const SHARED_SLOTS = process.env.SHARED_SLOTS==='1';   // old Rule 10 (removed; default OFF); SHARED_SLOTS=1 -> turn it back on
+const KEEP_NEXT = process.env.KEEP_NEXT!=='0';         // Rule 11 keep your own next pad (default ON); KEEP_NEXT=0 -> off
+E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off"});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
@@ -96,6 +98,7 @@ function simulate(cfg){
   function noteRes(rid){ for(const [K,ob] of views.get(rid).others) for(const b of ob.buf) everRes[rid][K].add(b); }
   function applyRecv(rid,m){
     const v=views.get(rid); if(!v.others.get(m.from)) return;
+    if(cfg.log) cfg.log.push(`deliver ${"ABCD"[m.from]}#${m.sseq}(pad ${m.pad})→${"ABCD"[rid]}`);
     // Rule 8: pass the sender's message number (m.sseq). With LEGACY_RECEIVE=1 the
     // number is withheld, reproducing the old behaviour (position always moves to
     // the pad of whichever message arrived last).
@@ -148,6 +151,11 @@ function simulate(cfg){
     const uni = () => live[Math.floor(rng()*live.length)];
     switch(sched){
       case "random": return uni();
+      case "prob": {             // party x sends with probability p[x] (renormalised over parties still running)
+        const lp = live.filter(p=>cfg.p[p.id]>0); if(!lp.length) return null;
+        const tot = lp.reduce((t,p)=>t+cfg.p[p.id],0); let u = rng()*tot;
+        for(const p of lp){ u -= cfg.p[p.id]; if(u<0) return p; }
+        return lp[lp.length-1]; }
       case "rr": return live[steps%live.length];
       case "flood": return live[0];
       case "flood-rev": return live[live.length-1];
@@ -184,8 +192,12 @@ function simulate(cfg){
     }
   }
 
-  let steps=0, reuse=null, badWrite=0, invViol=0, maxPending=0;
+  let lastRho=0, steps=0, reuse=null, badWrite=0, invViol=0, maxPending=0;
   while(steps<maxSteps){
+    if(cfg.switchWhen && cfg.switchWhen({w,views,inflight,n,d})){   // hand the current state to the exhaustive checker
+      return { switched:true, steps, snapshot: structuredClone({ parties:w.parties.map(p=>({id:p.id,pos:p.pos,dir:p.dir,halted:!!p.halted,sent:p.sent})),
+               used:w.used, views:[0,1,2,3].map(i=>views.get(i)), inflight:inflight.map(m=>({to:m.to,from:m.from,pad:m.pad,dir:m.dir,sseq:m.sseq})) }) };
+    }
     const me = pick(steps);
     if(!me) break;
     deliverBefore(me.id);
@@ -196,7 +208,10 @@ function simulate(cfg){
     const v = views.get(me.id); v.self.pos=me.pos; v.self.dir=me.dir;
     const nx = E.nextSlot(me.pos,me.dir,v,n,d,w.nodes);
     steps++;
-    if(!nx){ me.halted=true; continue; }
+    if(!nx){ me.halted=true;
+      // efficiency diagnostic: pads this party treats as occupied but that are unused (rho)
+      { const {blocked}=E.occupancy(v); let c=0; const tp=new Set(w.parties.map(q=>q.pos)); for(const q of blocked) if(!w.used.has(q)&&!tp.has(q)) c++; lastRho=c; }
+      continue; }
     if(E.buildBlocked(v,n).reservedBy.has(nx.pad)) badWrite++;
     if(w.used.has(nx.pad)){                                   // would-be REUSE -> halt the protocol
       const info = padInfo.get(nx.pad);
@@ -216,6 +231,8 @@ function simulate(cfg){
       break;
     }
     // commit
+    if(cfg.log){ const vv=views.get(me.id); const res=[...vv.others].map(([k,o])=>`${"ABCD"[k]}@${o.pos}[${o.buf}]`).join(" ");
+      cfg.log.push(`${"ABCD"[me.id]} ${nx.jumped?"JUMPS "+me.pos+"→":"sends on"} ${nx.pad}   (its view: ${res})`); }
     me.pos=nx.pad; if(nx.jumped) me.dir=nx.face; me.sent++; sentCount[me.id]++;
     g++; w.used.set(nx.pad,me.id); v.used.add(nx.pad); padInfo.set(nx.pad,{by:me.id,gseq:g,jumped:nx.jumped});
     for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g,sseq:me.sent});
@@ -227,7 +244,10 @@ function simulate(cfg){
   for(const [,v] of views) for(const [K,o] of v.others){ if(!o.assumedLog) continue;
     for(const e of o.assumedLog){ const st=assume[e.kase]; st.marks++; if(w.used.get(e.pad)===K) st.right++; } }
   const used = w.used.size;
-  return { assume, n,d,seed,mode,sched, used, eff:used/n, wasted:n-used, steps, timeout:steps>=maxSteps,
+  // efficiency diagnostics: number of jumps J, and the maximal runs of unused pads at the end
+  let jumps=0, rho=lastRho; for(const [,inf] of padInfo) if(inf.jumped) jumps++;
+  let runsEnd=0, maxRunEnd=0, cur=0; for(let q=1;q<=n+1;q++){ if(q<=n && !w.used.has(q)) cur++; else { if(cur>0){runsEnd++; maxRunEnd=Math.max(maxRunEnd,cur);} cur=0; } }
+  return { assume, n,d,seed,mode,sched, used, eff:used/n, wasted:n-used, steps, timeout:steps>=maxSteps, jumps, runsEnd, maxRunEnd, rho,
            reuse, badWrite, invViol, maxPending, lateOlder };
 }
 
@@ -258,7 +278,7 @@ function buildJobs(tier){
 // ---------------------------------------------------------------------------
 // parallel runner (worker_threads)
 const { Worker, isMainThread, parentPort, workerData } = require("worker_threads");
-if(!isMainThread){
+if(!isMainThread && workerData && workerData.suiteWorker){
   const out=[]; for(const j of workerData.jobs){ const r=simulate(j); r.tier=j.tier; out.push(r); }
   parentPort.postMessage(out);
 } else if(require.main===module){
@@ -270,10 +290,10 @@ if(!isMainThread){
   const chunks=Array.from({length:W},()=>[]); jobs.forEach((j,i)=>chunks[i%W].push(j));
   const t0=Date.now();
   console.error(`running ${jobs.length} runs on ${W} workers...`);
-  Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c}}); wk.on("message",res); wk.on("error",rej); })))
+  Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"_stickyjumps":"") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"":"_norule11") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OTPAC m=4 · Async OTP Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ───────────────────────── HALT ALERT ───────────────────────── -->
+<div id="blockedOverlay" class="blocked-overlay">
+    <div class="modal">
+        <div class="modal-flag">PROTOCOL HALTED</div>
+        <h1 id="haltTitle">NO JUMP SPOT</h1>
+        <p id="haltText">No party has a valid BSP jump spot left (more than 2d free pads on both sides).</p>
+        <table class="blocked-stats-table">
+            <thead><tr><th>Party</th><th>Pads used</th><th>Jumps</th></tr></thead>
+            <tbody id="blockedTableBody"></tbody>
+        </table>
+        <div class="modal-waste">
+            <span>Total pads wasted</span>
+            <span id="statsWasted"></span>
+        </div>
+        <div class="modal-actions">
+            <button class="btn-view" onclick="closePopup()">View trace</button>
+            <button class="btn-restart" onclick="initSystem()">↻ Restart protocol</button>
+        </div>
+    </div>
+</div>
+
+<div class="container">
+
+    <!-- ───────────────────────── NAMEPLATE ───────────────────────── -->
+    <header class="header">
+        <div class="nameplate">
+            <div class="wordmark">
+                <span class="wordmark-glyph">◇</span>
+                <span>OTPAC m=4</span>
+                <span class="wordmark-sub">Async OTP Monitor</span>
+            </div>
+            <div class="subtitle">Per-party reserved buffers &amp; individual jumps over a static BSP tree, with up to <i>d</i> undelivered messages per party (protocol A<sub>5</sub>, Rules R1–R9 and R11) · <a href="otpac_trace.html">step-by-step tracer</a> · <a href="../old_protocol/index.html">previous protocol</a></div>
+        </div>
+        <div class="status" id="statusLamp" data-state="ready">
+            <span class="status-dot"></span>
+            <span class="status-text">Ready</span>
+        </div>
+    </header>
+
+    <!-- ───────────────────────── CONFIG WELL ───────────────────────── -->
+    <section class="controls" aria-label="Simulation parameters">
+        <div class="field">
+            <label for="inpN">Pads <span class="sym">n</span></label>
+            <input type="number" id="inpN" value="128" min="16" title="Total length of the shared pad.">
+        </div>
+        <div class="field">
+            <label for="inpD">Buffer <span class="sym">d</span></label>
+            <input type="number" id="inpD" value="2" min="1" title="At most d messages may be undelivered to a party when it sends. Must satisfy d ≤ ⌊n/4⌋−1.">
+        </div>
+        <div class="field">
+            <label for="inpM">Parties <span class="sym">m</span></label>
+            <input type="number" id="inpM" value="4" disabled title="This protocol is for exactly four parties: A, C move right; B, D move left.">
+        </div>
+        <div class="field">
+            <label for="inpMode">Delivery</label>
+            <select id="inpMode" title="How the network delivers messages. Every mode keeps at most d messages undelivered per recipient.">
+                <option value="instant">instant (synchronous)</option>
+                <option value="worst" selected>worst (max delay, in order)</option>
+                <option value="random">random (p = 0.5)</option>
+                <option value="adversarial">adversarial (p = 0.1)</option>
+                <option value="lifo">lifo (newest first)</option>
+                <option value="randcap">randcap (reordering)</option>
+                <option value="shuffle">shuffle (random order)</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="inpSeed">Seed</label>
+            <input type="number" id="inpSeed" value="7" min="0" title="Seed for random delivery and the random continuation.">
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field field-grow">
+            <label for="inpSeq">Message sequence</label>
+            <input type="text" id="inpSeq" value="A30B30" placeholder="e.g. AABBCD  (A3 = AAA)" spellcheck="false" autocomplete="off">
+            <div class="presets" aria-label="Sequence presets">
+                <button type="button" class="chip" data-seq="A110">Single flood</button>
+                <button type="button" class="chip" data-seq="ABABABABABABABABABABABAB">Collision force</button>
+                <button type="button" class="chip" data-seq="ABCDABCDABCDABCD">Round robin</button>
+                <button type="button" class="chip" data-seq="A30B30">One arena first</button>
+            </div>
+        </div>
+
+        <div class="field">
+            <label for="inpAfter">After sequence</label>
+            <select id="inpAfter" title="What happens when the typed sequence is exhausted.">
+                <option value="random" selected>random until halt</option>
+                <option value="stop">stop</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="inpSpeed">Speed <span class="sym">ms</span></label>
+            <input type="number" id="inpSpeed" value="80" step="20" min="0" title="Delay between steps. Set 0 to run instantly.">
+        </div>
+
+        <div class="actions">
+            <button class="btn-run" id="btnRun" onclick="runSequence()">▶ Run</button>
+            <button class="btn-reset" id="btnStep" onclick="stepOnce()" title="Execute the next Send">Step</button>
+            <button class="btn-reset" onclick="initSystem()">↻ Reset</button>
+        </div>
+    </section>
+
+    <!-- ───────────────────────── WORKSPACE ───────────────────────── -->
+    <div class="layout-grid">
+
+        <!-- Left rail: live readout + state + one party's view -->
+        <aside class="rail">
+            <section class="panel readout-panel">
+                <div class="section-label">Live readout</div>
+                <div class="readout" id="live-stats"><span class="readout-idle">Awaiting run…</span></div>
+            </section>
+
+            <section class="panel">
+                <div class="section-label">Parties <span class="label-note">true state</span></div>
+                <table class="state-table">
+                    <thead><tr><th>Party</th><th>Pos</th><th>Dir</th><th>Sent</th><th>In flight</th></tr></thead>
+                    <tbody id="stateBody"></tbody>
+                </table>
+            </section>
+
+            <section class="panel">
+                <div class="section-label section-label-row">
+                    <span>View of</span>
+                    <select id="inpObs" class="obs-select" title="Whose local view to display (also outlined on the pad array)">
+                        <option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option>
+                    </select>
+                </div>
+                <div class="view-box" id="viewBox"></div>
+            </section>
+        </aside>
+
+        <!-- Main column: the pad tape (hero) + BSP tree -->
+        <main class="stage">
+            <section class="panel tape-panel">
+                <div class="section-label section-label-row">
+                    <span>Pad array</span>
+                    <div class="legend" aria-hidden="true">
+                        <span class="legend-item"><i class="sw sw-active"></i>Used</span>
+                        <span class="legend-item"><i class="sw sw-pos"></i>Current</span>
+                        <span class="legend-item"><i class="sw sw-res"></i>Reserved (in view)</span>
+                        <span class="legend-item"><i class="sw sw-jump"></i>Jump landing</span>
+                        <span class="legend-item"><i class="sw sw-empty"></i>Free</span>
+                    </div>
+                </div>
+                <div class="tape">
+                    <div class="pad-array" id="padGrid"></div>
+                </div>
+            </section>
+
+            <section class="panel tree-panel">
+                <div class="section-label">Static BSP tree <span class="label-note">nodes ⟨M, M+1⟩ used as landings · right-movers land on M+1, left-movers on M</span></div>
+                <div id="tree-container">
+                    <svg id="tree-lines"></svg>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ───────────────────────── CONSOLE ───────────────────────── -->
+    <section class="panel console-panel">
+        <div class="section-label">System log</div>
+        <div class="log" id="logBox"></div>
+    </section>
+
+</div>
+
+<script src="otpac_m4.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

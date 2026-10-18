@@ -15,9 +15,10 @@
 //     pads are additionally held, Rule 9).
 //  5. Reservations are DISJOINT: a pad reserved for one party is not reserved
 //     for another (prediction treats others' buffers as obstacles too).
-//  6. Speculative-jumpspot invalidation: a jumpspot is produced only while it
-//     passes Rule 3; an approaching party that breaks its clearance (with no
-//     confirmed jump) makes the next recompute drop it.
+//  6. Speculative-jumpspot invalidation: a jumpspot is PREDICTED only while it
+//     passes Rule 3; once an approaching party breaks its clearance it is no
+//     longer predicted for new reservations (a pad already reserved for it stays
+//     held under Rule 9 until the party's messages prove it unused).
 //  7. On every Receive, re-validate ALL tracked parties' buffers, not just the
 //     sender's.
 //  8. Message order (header carries a per-sender message #):
@@ -28,9 +29,17 @@
 //         only the reservation if the sender provably followed it, only the
 //         straight-line pads if it provably walked, and for an unforeseen jump
 //         every pad it could have used (see assumeSkipped).
-//  9. Sticky reservations: a WALK-predicted pad stays reserved until all of the
-//     party's messages up to the one it was predicted for have arrived (then it
-//     is either known used or proven unused). Jump-predicted pads follow Rule 6.
+//  9. Sticky reservations: a predicted pad (walk or jump) stays reserved until
+//     all of the party's messages up to the one it was predicted for have arrived
+//     or been accounted for by Rule 8(b) (then it is known used or proven unused).
+// 10. (removed 2026-10-17) Shared slot assignment by party priority. It made a party
+//     ignore the predicted landing of a lower-priority party and land on that slot
+//     itself, which caused reuses when the other party had already jumped. Kept as an
+//     option (sharedSlots, default OFF) for comparison runs only.
+// 11. Keep your own next pad: when an observer predicts another party K, it never
+//     predicts K into the observer's own next pad. That pad has been reserved for the
+//     observer in everyone's view all along (it could already have used it), so the
+//     party that arrived later is the one that must jump (option contested="always").
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -51,10 +60,23 @@ function initWorld(n,d,m){
 }
 
 // Options (both ON by default; switchable for comparison runs):
-//   sticky    -- Rule 9: walk-predicted reservations are held until proven resolved
+//   sticky      -- Rule 9: predicted reservations are held until proven resolved
+//   stickyJumps -- apply Rule 9 to jump-predicted pads too (default ON); OFF = those
+//                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:false};   // stickyJumps: comparison only -- also hold jump-predicted pads (i.e. no Rule 6)
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"always", backPass:false};
+// backPass -- Rule 3 extension (experimental): on the lander's BACK side, used pads and the
+//             positions of parties moving away from the node do not count as obstacles
+//             either (only parties that could come towards the landing matter).
+// contested -- Rule 11 (experimental): a party does not give its OWN next pad away. When the
+//              observer's next pad is also the next pad another party K is predicted to walk
+//              into, the observer does not predict K into it ("always": every party keeps its
+//              own next pad; "low"/"high": only if it has the lower/higher id). The pad stays
+//              reserved for whoever others have been holding it for (Rule 9), so the party that
+//              arrived later is the one that jumps. "off" = old behaviour.
+// sharedSlots -- old Rule 10 (REMOVED, option OFF by default): jump LANDING slots are assigned in one fixed priority order
+//                (party id: P0 first), the observer's own landing included.
 function setOptions(o){ Object.assign(OPT,o); }
 
 // --- OWN-MOVE occupancy: what a sender must NOT write. Union of used pads,
@@ -105,6 +127,64 @@ function predBlocked(view,k,extra){
   return {blocked,resDir};
 }
 
+// the observer's own id = the one party id it does not track
+function selfIdOf(view){ for(let i=0;i<=view.others.size;i++) if(!view.others.has(i)) return i; return -1; }
+
+// --- Rule 10: walls for choosing party X's LANDING slot. Starting from the normal
+// walls, drop pads that are only LANDING claims of lower-priority parties (id > X;
+// they yield to X), and add the observer's own landing claim if the observer has
+// higher priority than X. Used pads, positions, X's own pads so far and every
+// party's WALKING pads are never dropped.
+function landingWalls(view,X,blocked,resDir,extra){
+  if(!OPT.sharedSlots) return {blocked,resDir};
+  const sid=selfIdOf(view), lb=new Set(blocked), lr=new Map(resDir), prot=new Set();
+  if(view.used) for(const u of view.used) prot.add(u);
+  prot.add(view.self.pos); if(extra) for(const e of extra) prot.add(e);
+  for(const [id,o] of view.others){
+    if(typeof id!=="number") continue;
+    if(id!==X) prot.add(o.pos);
+    for(const b of (o.fwd||[])) if(!(o.landClaim&&o.landClaim.has(b))) prot.add(b);
+    if(o.held) for(const [q] of o.held) if(!(o.heldLand&&o.heldLand.has(q))) prot.add(q);
+  }
+  for(const [id,o] of view.others){
+    if(typeof id!=="number"||id===X||id<X) continue;          // only LOWER-priority parties
+    if(o.landClaim) for(const q of o.landClaim) if(!prot.has(q)){ lb.delete(q); lr.delete(q); }
+    if(o.heldLand)  for(const q of o.heldLand)  if(!prot.has(q)){ lb.delete(q); lr.delete(q); }
+  }
+  if(view.selfClaim && sid<X) for(const q of view.selfClaim){ lb.add(q); if(!prot.has(q)) lr.set(q,view.self.dir); }
+  return {blocked:lb,resDir:lr};
+}
+
+// one predicted step for party X: walk if free, else land on the slot Rule 10 gives X
+function predStep(view,X,p,dir,blocked,resDir,extra,n,d,nodes){
+  const lin=p+dir;
+  if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};
+  const L=landingWalls(view,X,blocked,resDir,extra);
+  const t=jumpTarget(dir,L.blocked,n,d,nodes,L.resDir,passMap(view));
+  return t==null?null:{pad:t,jumped:true,face:dir};
+}
+
+// --- Rule 10: the observer's OWN prospective landing (and the walk after it within
+// d steps), so that lower-priority parties' predicted landings avoid it.
+function computeSelfClaim(view,n,d,nodes){
+  if(!OPT.sharedSlots){ view.selfClaim=null; return; }
+  const X=selfIdOf(view); let p=view.self.pos, dir=view.self.dir; const fwd=[]; let firstJump=-1;
+  for(let s=0;s<d;s++){
+    const {blocked,resDir}=occupancy(view); for(const e of fwd) blocked.add(e);
+    const st=predStep(view,X,p,dir,blocked,resDir,fwd,n,d,nodes);
+    if(!st) break;
+    if(st.jumped && firstJump<0) firstJump=fwd.length;
+    fwd.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+  }
+  view.selfClaim=new Set(firstJump<0?[]:fwd.slice(firstJump));
+}
+
+// recompute every party in priority order (P0 first), the observer's own claim in its place
+function refreshAll(view,n,d,nodes){
+  const sid=selfIdOf(view), N=view.others.size+1;
+  for(let id=0;id<N;id++){ if(id===sid) computeSelfClaim(view,n,d,nodes); else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
+}
+
 // --- root-most not-fully-occupied node, default side by dir, >2d clearance
 // measured OUTSIDE the node's own two pads.
 //   FRONT side (the side the lander travels toward): every obstacle counts.
@@ -114,7 +194,15 @@ function predBlocked(view,k,extra){
 //     invalidate M for a left-mover). Positions and used pads always count.
 // A jumpspot is VALID only while this returns it; when an approaching party
 // breaks the clearance it returns a different node or null (Rule 6).
-function jumpTarget(dir,blocked,n,d,nodes,resDir){
+function passMap(view){
+  if(!OPT.backPass||!view) return null;
+  const m=new Map();
+  for(const [id,o] of view.others) if(typeof id==="number") m.set(o.pos,o.dir);
+  m.set(view.self.pos,view.self.dir);
+  if(view.used) for(const u of view.used) m.set(u,0);
+  return m;
+}
+function jumpTarget(dir,blocked,n,d,nodes,resDir,pass){
   for(const M of nodes){
     const left=M,right=M+1; if(right>n) continue;
     if(blocked.has(left)&&blocked.has(right)) continue;   // fully occupied -> descend
@@ -122,7 +210,7 @@ function jumpTarget(dir,blocked,n,d,nodes,resDir){
     if(blocked.has(cand)) continue;                       // my slot taken -> descend
     const front = dir===+1 ? clearOutside(right,+1,blocked,n) : clearOutside(left,-1,blocked,n);
     const back = (OPT.oppExempt && resDir)
-      ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir))
+      ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,pass) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,pass))
       : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
     if(front > 2*d && back > 2*d) return cand;
   }
@@ -130,15 +218,16 @@ function jumpTarget(dir,blocked,n,d,nodes,resDir){
 }
 function clearOutside(edge,step,blocked,n){let c=0,q=edge+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
 // as clearOutside, but a pad reserved for a party moving in `awayDir` is treated as free
-function clearOutsideExempt(edge,step,blocked,n,resDir,awayDir){let c=0,q=edge+step;while(q>=1&&q<=n&&(!blocked.has(q)||resDir.get(q)===awayDir)){c++;q+=step;}return c;}
+function clearOutsideExempt(edge,step,blocked,n,resDir,awayDir,pass){let c=0,q=edge+step;
+  while(q>=1&&q<=n&&(!blocked.has(q)||resDir.get(q)===awayDir||(pass&&pass.has(q)&&(pass.get(q)===0||pass.get(q)===awayDir)))){c++;q+=step;}return c;}
 function clearance(p,step,blocked,n){let c=0,q=p+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
 
 // --- one step of a path: WALK if next linear pad free of `blocked`, else JUMP
 // to the root-most VALID node. Returns {pad, jumped, face} or null (halt).
-function stepOf(pos,dir,blocked,n,d,nodes,resDir){
+function stepOf(pos,dir,blocked,n,d,nodes,resDir,pass){
   const lin=pos+dir;
   if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};  // walk
-  const t=jumpTarget(dir,blocked,n,d,nodes,resDir);                                   // overlap -> jump
+  const t=jumpTarget(dir,blocked,n,d,nodes,resDir,pass);                              // overlap -> jump
   if(t==null) return null;
   return {pad:t,jumped:true,face:dir};
 }
@@ -146,38 +235,49 @@ function stepOf(pos,dir,blocked,n,d,nodes,resDir){
 // Public: a party's OWN next move, from its view (union-of-buffers occupancy).
 function nextSlot(pos,dir,view,n,d,nodes){
   const {blocked,resDir}=occupancy(view);
-  return stepOf(pos,dir,blocked,n,d,nodes,resDir);
+  return stepOf(pos,dir,blocked,n,d,nodes,resDir,passMap(view));
 }
 
 // --- K's reserved buffer = FRESH prediction + HELD (sticky) pads.
 //   fwd: K's next d pads from K's confirmed position, jump-aware, recomputed on
 //        every occupancy change. Jump-predicted pads (a landing and the walk after
 //        it) live only here, so an invalidated jumpspot drops (Rule 6).
-//   held (Rule 9): every WALK-predicted pad (those before the first predicted jump)
-//        is also remembered with the message # it was predicted for, and stays
-//        reserved until all of K's messages up to that # have arrived (then the pad
-//        is either known used, or proven unused). See deliverBuffer.
+//   held (Rule 9): every predicted pad (with stickyJumps OFF: only those before the
+//        first predicted jump) is also remembered with the message # it was
+//        predicted for, and stays reserved until all of K's messages up to that #
+//        have arrived or been accounted for (then it is known used or proven unused).
 function refreshBuffer(observerView,k,n,d,nodes){
   const ko=observerView.others.get(k);
   if(!ko) return;
   let p=ko.pos, dir=ko.dir;
   const fwd=[]; let firstJump=-1;
+  // Rule 11: the observer keeps its own next pad if it has priority over K
+  let keep=null;
+  if(OPT.contested!=="off"){
+    const sid=selfIdOf(observerView), sn=observerView.self.pos+observerView.self.dir;
+    const prio = OPT.contested==="always" ? true : OPT.contested==="low" ? sid<k : sid>k;
+    if(prio && sn>=1 && sn<=n && !(observerView.used&&observerView.used.has(sn))) keep=sn;
+  }
   for(let s=0;s<d;s++){
     const {blocked,resDir}=predBlocked(observerView,k,fwd);
-    const st=stepOf(p,dir,blocked,n,d,nodes,resDir);
+    if(keep!==null){ blocked.add(keep); resDir.delete(keep); }
+    const st=predStep(observerView,k,p,dir,blocked,resDir,fwd,n,d,nodes);
     if(!st) break;                       // K would halt here -> predict nothing further
     if(st.jumped && firstJump<0) firstJump=fwd.length;
     fwd.push(st.pad);
     p=st.pad; if(st.jumped) dir=st.face;
   }
   ko.fwd=fwd;
+  ko.landClaim=new Set(firstJump<0?[]:fwd.slice(firstJump));   // Rule 10: predicted landing (+ walk after it)
   const buf=fwd.slice();
   if(OPT.sticky){
     const held=ko.held||(ko.held=new Map());          // pad -> message # it was predicted for
+    const heldLand=ko.heldLand||(ko.heldLand=new Set());  // held pads that were predicted LANDING pads
     const last=ko.lastNum||0, lin=(OPT.stickyJumps||firstJump<0)?fwd.length:firstJump;
-    for(let i=0;i<lin;i++){ const q=fwd[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
+    for(let i=0;i<lin;i++){ const q=fwd[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s);
+      if(firstJump>=0 && i>=firstJump) heldLand.add(q); else heldLand.delete(q); }
     const used=observerView.used;
-    for(const [q] of held){ if(used&&used.has(q)) held.delete(q); else if(!buf.includes(q)) buf.push(q); }
+    for(const [q] of held){ if(used&&used.has(q)){ held.delete(q); heldLand.delete(q); } else if(!buf.includes(q)) buf.push(q); }
   }
   ko.buf=buf;
 }
@@ -220,10 +320,10 @@ function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
     // pad predicted for a message # <= prefix is resolved (known used, or proven unused).
     recv.add(num);
     o.prefix=o.prefix||0; while(recv.has(o.prefix+1)) o.prefix++;
-    if(o.held) for(const [q,s] of o.held) if(s<=o.prefix) o.held.delete(q);
+    if(o.held) for(const [q,s] of o.held) if(s<=o.prefix){ o.held.delete(q); if(o.heldLand) o.heldLand.delete(q); }
   }
   // else: older message -> pad is marked used above; position stays where it is
-  for(const [id] of observerView.others){ if(typeof id==="number") refreshBuffer(observerView,id,n,d,nodes); }
+  refreshAll(observerView,n,d,nodes);   // every party, in priority order (Rule 10)
 }
 
 // --- Rule 8(b): party K sent k messages we have not received between its last
@@ -267,4 +367,4 @@ function assumeSkipped(view,o,pad,k,n){
   return kase!=="jump" || SKIP_JUMP_POLICY==="both";
 }
 
-module.exports={bspNodes,initWorld,occupancy,buildBlocked,predBlocked,jumpTarget,stepOf,nextSlot,refreshBuffer,deliverBuffer,setSkipJumpPolicy,setOptions};
+if(typeof module!=="undefined") module.exports={bspNodes,initWorld,occupancy,buildBlocked,predBlocked,jumpTarget,stepOf,nextSlot,refreshBuffer,refreshAll,deliverBuffer,setSkipJumpPolicy,setOptions};
