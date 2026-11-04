@@ -128,6 +128,7 @@ function stepOnce() {
     const from = me.pos;
     me.pos = nx.pad; if (nx.jumped) me.dir = nx.face; me.sent++;
     v.self.pos = me.pos; v.self.dir = me.dir;   // the party's own view follows its move
+    refreshAll(v, N, D, world.nodes);           // Rule 13: recompute predictions after own move
     world.used.set(nx.pad, me.id); v.used.add(nx.pad); gseq++;
     if (nx.jumped) {
         me.jumps++;

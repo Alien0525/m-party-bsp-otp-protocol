@@ -43,6 +43,10 @@
 //     2026-10-21) it caused walking collisions: two parties walking toward each other each
 //     kept the pad between them and both used it. Kept as option contested="always"
 //     (default "off") for comparison runs only.
+// 13. Legal landings only (selfAhead, default ON): an observer never predicts another party
+//     to land on one of the observer's own next d pads, and every prediction is recomputed
+//     after each move (the observer's own included). "reserved" = current legal prediction;
+//     pads reserved earlier stay "held" until resolved (Rule 9). Neither is ever used (R1).
 // 12. Halt-all (Prof. Di Crescenzo, 2026-11-04): when any party cannot send (no valid
 //     jumpspot), the whole protocol halts and all remaining pads count as wasted. This is
 //     enforced by the drivers (test suite, tracer, visualizer), not by this engine.
@@ -71,7 +75,13 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true, selfAhead:true};
+// selfAhead -- (ON by default since 2026-11-04, Aman) when an observer predicts another party's
+//             LANDING, its own next d pads (the pads it will walk into) are not legal landing
+//             slots and count as occupied for that node's clearance. Walking predictions are
+//             unchanged. Drivers also recompute every prediction after a party's own move,
+//             so "reserved" always holds only currently legal spots; earlier reservations stay
+//             in "held" (Rule 9) and are never used.
 // frontOnly -- (ON by default since 2026-11-04, Aman) Rule 3 checks only the lander's FRONT side, the
 //             side it will walk into (left of the node for a left-mover, right for a right-mover);
 //             the back side, behind the lander, is not checked.
@@ -170,10 +180,19 @@ function landingWalls(view,X,blocked,resDir,extra){
 }
 
 // one predicted step for party X: walk if free, else land on the slot Rule 10 gives X
+// the observer's own next d pads in its direction, up to the first used pad (option selfAhead)
+function selfAheadPads(view,n,d){
+  const out=[]; if(!OPT.selfAhead||!view.self||view.self.pos==null) return out;
+  let q=view.self.pos;
+  for(let i=0;i<d;i++){ q+=view.self.dir; if(q<1||q>n||(view.used&&view.used.has(q))) break; out.push(q); }
+  return out;
+}
 function predStep(view,X,p,dir,blocked,resDir,extra,n,d,nodes){
   const lin=p+dir;
   if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};
-  const L=landingWalls(view,X,blocked,resDir,extra);
+  let L=landingWalls(view,X,blocked,resDir,extra);
+  const ahead=selfAheadPads(view,n,d);
+  if(ahead.length){ const b=new Set(L.blocked), r=new Map(L.resDir); for(const q of ahead){ b.add(q); r.delete(q); } L={blocked:b,resDir:r}; }
   const t=jumpTarget(dir,L.blocked,n,d,nodes,L.resDir,passMap(view));
   return t==null?null:{pad:t,jumped:true,face:dir};
 }

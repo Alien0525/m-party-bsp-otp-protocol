@@ -53,9 +53,10 @@ const SHARED_SLOTS = process.env.SHARED_SLOTS==='1';   // old Rule 10 (removed; 
 const KEEP_NEXT = process.env.KEEP_NEXT==='1';         // old Rule 11 (removed 2026-11-04; default OFF); KEEP_NEXT=1 -> turn it back on
 const SELF_LAG = process.env.SELF_LAG==="1";         // SELF_LAG=1 reproduces the old bug: a party's own position in its view lagged one send behind
 const HALT_ALL = process.env.HALT_ALL || "instant";   // Rule 12, default "instant": stop everyone when one party halts; HALT_ALL=off -> old behaviour. instant = oracle stop; msg = the halting party broadcasts a halt notice, each party stops when it receives it
+const SELF_AHEAD = process.env.SELF_AHEAD!=="0";      // Rule 13 legal landings only + recompute after own move (default ON); SELF_AHEAD=0 -> off
 const FRONT_ONLY = process.env.FRONT_ONLY!=="0";      // Rule 3 checks only the lander's front side (default ON); FRONT_ONLY=0 -> both sides
 const FALLBACK = process.env.FALLBACK || "off";       // experimental: reserve one pad at the next jumpspot when no node is valid (first|best)
-E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK, frontOnly:FRONT_ONLY});
+E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK, frontOnly:FRONT_ONLY, selfAhead:SELF_AHEAD});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
@@ -242,6 +243,7 @@ function simulate(cfg){
       cfg.log.push(`${"ABCD"[me.id]} ${nx.jumped?"JUMPS "+me.pos+"→":"sends on"} ${nx.pad}   (its view: ${res})`); }
     me.pos=nx.pad; if(nx.jumped) me.dir=nx.face; me.sent++; sentCount[me.id]++;
     if(!SELF_LAG){ v.self.pos=me.pos; v.self.dir=me.dir; }   // the party's own view follows its move (bug fix 2026-10-21)
+    if(SELF_AHEAD) E.refreshAll(v,n,d,w.nodes);             // Rule 13: recompute predictions after own move
     g++; w.used.set(nx.pad,me.id); v.used.add(nx.pad); padInfo.set(nx.pad,{by:me.id,gseq:g,jumped:nx.jumped});
     for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g,sseq:me.sent});
     deliverAfterSend();
@@ -301,7 +303,7 @@ if(!isMainThread && workerData && workerData.suiteWorker){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="instant"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + (FRONT_ONLY?"":"_bothsides") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="instant"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + (FRONT_ONLY?"":"_bothsides") + (SELF_AHEAD?"":"_noselfahead") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);
