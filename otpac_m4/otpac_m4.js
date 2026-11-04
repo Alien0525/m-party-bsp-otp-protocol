@@ -66,7 +66,10 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off"};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false};
+// frontOnly -- (experimental, Aman 2026-11-04) Rule 3 checks only the lander's FRONT side, the
+//             side it will walk into (left of the node for a left-mover, right for a right-mover);
+//             the back side, behind the lander, is not checked.
 // fallback -- (experimental) when an observer predicts party K and K must jump but no node is
 //             valid in the observer's view, the observer still reserves ONE pad for K: K's
 //             landing slot at its next jumpspot, since K (or another observer) may have seen that
@@ -218,7 +221,7 @@ function jumpTarget(dir,blocked,n,d,nodes,resDir,pass){
     const back = (OPT.oppExempt && resDir)
       ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,pass) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,pass))
       : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
-    if(front > 2*d && back > 2*d) return cand;
+    if(front > 2*d && (OPT.frontOnly || back > 2*d)) return cand;
   }
   return null;                                            // no valid node -> halt
 }
@@ -235,7 +238,7 @@ function fallbackTarget(dir,blocked,n,d,nodes,resDir,pass,mode){
     const back = (OPT.oppExempt && resDir)
       ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,pass) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,pass))
       : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
-    const sc=Math.min(front,back); if(sc>bestScore){bestScore=sc; best=cand;}
+    const sc=OPT.frontOnly?front:Math.min(front,back); if(sc>bestScore){bestScore=sc; best=cand;}
   }
   return best;
 }
