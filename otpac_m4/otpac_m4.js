@@ -75,7 +75,15 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true, selfAhead:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true, selfAhead:true, twoTimelines:false};
+// twoTimelines -- (Aman 2026-11-04) Rule 14. When two parties approach head-on and their
+//             predicted pads overlap, the order in which they will meet is unknown, so an
+//             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
+//             K walks on regardless of opposite-direction reservations (the contested pads are
+//             reserved for both), and (J) the jump timeline, where the opponent's walk timeline
+//             (or the observer's own next d pads, if the observer is the opponent) blocks K and
+//             K jumps; K's jumpspot is reserved. Both stay held (Rule 9) until K's messages
+//             resolve them. Rule 8(b) matches a skipped message against either timeline.
 // selfAhead -- (ON by default since 2026-11-04, Aman) when an observer predicts another party's
 //             LANDING, its own next d pads (the pads it will walk into) are not legal landing
 //             slots and count as occupied for that node's clearance. Walking predictions are
@@ -137,12 +145,13 @@ function buildBlocked(view,n){
 // OTHER party's reserved buffer -- so a pad already reserved for another party
 // is NOT reserved again for K (reservations are DISJOINT). `extra` = pads already
 // placed in K's own buffer this pass. Returns {blocked, resDir} (see occupancy).
-function predBlocked(view,k,extra){
+function predBlocked(view,k,extra,skipDir){
   const blocked=new Set(), hard=new Set(), resDir=new Map();
   if(view.used) for(const u of view.used){ blocked.add(u); hard.add(u); }
   for(const [id,o] of view.others){
     if(id===k||typeof id!=="number") continue;
     blocked.add(o.pos); hard.add(o.pos);
+    if(skipDir!==undefined && o.dir===skipDir) continue;   // Rule 14 walk timeline: ignore opposite-direction reservations
     for(const b of o.buf){ blocked.add(b); if(!resDir.has(b)) resDir.set(b,o.dir); }   // disjoint reservations
   }
   blocked.add(view.self.pos); hard.add(view.self.pos);
@@ -215,7 +224,11 @@ function computeSelfClaim(view,n,d,nodes){
 // recompute every party in priority order (P0 first), the observer's own claim in its place
 function refreshAll(view,n,d,nodes){
   const sid=selfIdOf(view), N=view.others.size+1;
+  if(OPT.twoTimelines){                    // Rule 14: every party's walk timeline, once per pass
+    view._W=new Map(); for(const [id,o] of view.others) if(typeof id==="number") view._W.set(id,pathFor(view,id,n,d,nodes,-o.dir,null));
+  }
   for(let id=0;id<N;id++){ if(id===sid) computeSelfClaim(view,n,d,nodes); else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
+  view._W=null;
 }
 
 // --- root-most not-fully-occupied node, default side by dir, >2d clearance
@@ -296,9 +309,51 @@ function nextSlot(pos,dir,view,n,d,nodes){
 //        first predicted jump) is also remembered with the message # it was
 //        predicted for, and stays reserved until all of K's messages up to that #
 //        have arrived or been accounted for (then it is known used or proven unused).
+// Rule 14: K's predicted path under a given set of extra obstacles / ignored reservations.
+function pathFor(view,k,n,d,nodes,skipDir,extraBlock){
+  const ko=view.others.get(k); let p=ko.pos, dir=ko.dir; const fwd=[];
+  for(let s=0;s<d;s++){
+    const {blocked,resDir}=predBlocked(view,k,fwd,skipDir);
+    if(extraBlock) for(const q of extraBlock){ if(q!==p){ blocked.add(q); resDir.delete(q); } }
+    const st=predStep(view,k,p,dir,blocked,resDir,fwd,n,d,nodes);
+    if(!st) break;
+    fwd.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+  }
+  return fwd;
+}
+// the observer's own next d pads, regardless of selfAhead (Rule 14 jump timeline)
+function ownAhead(view,n,d){
+  const out=[]; if(!view.self||view.self.pos==null) return out; let q=view.self.pos;
+  for(let i=0;i<d;i++){ q+=view.self.dir; if(q<1||q>n||(view.used&&view.used.has(q))) break; out.push(q); }
+  return out;
+}
+function refreshTimelines(observerView,k,n,d,nodes){
+  const ko=observerView.others.get(k), dir=ko.dir;
+  const Wc=observerView._W, wOf=(id,o)=>(Wc&&Wc.has(id))?Wc.get(id):pathFor(observerView,id,n,d,nodes,-o.dir,null);
+  const W=wOf(k,ko);                                                    // walk timeline
+  const block=new Set();
+  for(const [id,o] of observerView.others) if(id!==k && typeof id==="number" && o.dir===-dir)
+    for(const q of wOf(id,o)) block.add(q);                             // opponents' walk timelines
+  if(observerView.self && observerView.self.dir===-dir) for(const q of ownAhead(observerView,n,d)) block.add(q);
+  const J=pathFor(observerView,k,n,d,nodes,undefined,block);           // jump timeline
+  const seqs=[J]; if(W.join()!==J.join()) seqs.push(W);
+  const fwd=J.slice(); for(const q of W) if(!fwd.includes(q)) fwd.push(q);
+  ko.seqs=seqs; ko.fwd=fwd; ko.landClaim=new Set();
+  const buf=fwd.slice();
+  if(OPT.sticky){
+    const held=ko.held||(ko.held=new Map()), heldLand=ko.heldLand||(ko.heldLand=new Set());
+    const last=ko.lastNum||0;
+    for(const sq of seqs) for(let i=0;i<sq.length;i++){ const q=sq[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
+    const used=observerView.used;
+    for(const [q] of held){ if(used&&used.has(q)){ held.delete(q); heldLand.delete(q); } else if(!buf.includes(q)) buf.push(q); }
+  }
+  ko.buf=buf;
+}
 function refreshBuffer(observerView,k,n,d,nodes){
   const ko=observerView.others.get(k);
   if(!ko) return;
+  if(OPT.twoTimelines) return refreshTimelines(observerView,k,n,d,nodes);
+  ko.seqs=null;
   let p=ko.pos, dir=ko.dir;
   const fwd=[]; let firstJump=-1;
   // Rule 11: the observer keeps its own next pad if it has priority over K
@@ -402,7 +457,8 @@ let SKIP_JUMP_POLICY="both";
 function setSkipJumpPolicy(p){ SKIP_JUMP_POLICY=p; }
 function assumeSkipped(view,o,pad,k,n){
   const dir=o.dir, marks=[]; let kase; const pred=o.fwd||o.buf;   // the fresh prediction, in order
-  if(pred.length>k && pred[k]===pad){ kase="predicted"; for(let i=0;i<k;i++) marks.push(pred[i]); }
+  const hit=(o.seqs||[pred]).find(sq=>sq.length>k && sq[k]===pad);   // Rule 14: either timeline
+  if(hit){ kase="predicted"; for(let i=0;i<k;i++) marks.push(hit[i]); }
   else if(pad===o.pos+(k+1)*dir){ kase="straight"; for(let i=1;i<=k;i++) marks.push(o.pos+i*dir); }
   else {
     kase="jump";
