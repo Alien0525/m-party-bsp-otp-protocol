@@ -50,8 +50,11 @@ E.setSkipJumpPolicy(SKIP_JUMP_POLICY);
 const STICKY = process.env.STICKY!=="0", OPP_EXEMPT = process.env.OPP_EXEMPT!=="0";   // Rules 9 and 3-refinement (default ON)
 const STICKY_JUMPS = process.env.STICKY_JUMPS!=='0';   // hold jump-predicted pads too (default ON); STICKY_JUMPS=0 -> older Rule 6 behaviour
 const SHARED_SLOTS = process.env.SHARED_SLOTS==='1';   // old Rule 10 (removed; default OFF); SHARED_SLOTS=1 -> turn it back on
-const KEEP_NEXT = process.env.KEEP_NEXT!=='0';         // Rule 11 keep your own next pad (default ON); KEEP_NEXT=0 -> off
-E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off"});
+const KEEP_NEXT = process.env.KEEP_NEXT==='1';         // old Rule 11 (removed 2026-11-04; default OFF); KEEP_NEXT=1 -> turn it back on
+const SELF_LAG = process.env.SELF_LAG==="1";         // SELF_LAG=1 reproduces the old bug: a party's own position in its view lagged one send behind
+const HALT_ALL = process.env.HALT_ALL || "off";       // experimental: stop everyone when one party halts. instant = oracle stop; msg = the halting party broadcasts a halt notice, each party stops when it receives it
+const FALLBACK = process.env.FALLBACK || "off";       // experimental: reserve one pad at the next jumpspot when no node is valid (first|best)
+E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
@@ -98,6 +101,7 @@ function simulate(cfg){
   function noteRes(rid){ for(const [K,ob] of views.get(rid).others) for(const b of ob.buf) everRes[rid][K].add(b); }
   function applyRecv(rid,m){
     const v=views.get(rid); if(!v.others.get(m.from)) return;
+    if(m.halt){ w.parties.find(p=>p.id===rid).halted=true; return; }   // HALT_ALL=msg: halt notice
     if(cfg.log) cfg.log.push(`deliver ${"ABCD"[m.from]}#${m.sseq}(pad ${m.pad})→${"ABCD"[rid]}`);
     // Rule 8: pass the sender's message number (m.sseq). With LEGACY_RECEIVE=1 the
     // number is withheld, reproducing the old behaviour (position always moves to
@@ -211,6 +215,8 @@ function simulate(cfg){
     if(!nx){ me.halted=true;
       // efficiency diagnostic: pads this party treats as occupied but that are unused (rho)
       { const {blocked}=E.occupancy(v); let c=0; const tp=new Set(w.parties.map(q=>q.pos)); for(const q of blocked) if(!w.used.has(q)&&!tp.has(q)) c++; lastRho=c; }
+      if(HALT_ALL==="instant") break;
+      if(HALT_ALL==="msg"){ for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,halt:true,gseq:++g}); capQueues(); }
       continue; }
     if(E.buildBlocked(v,n).reservedBy.has(nx.pad)) badWrite++;
     if(w.used.has(nx.pad)){                                   // would-be REUSE -> halt the protocol
@@ -234,6 +240,7 @@ function simulate(cfg){
     if(cfg.log){ const vv=views.get(me.id); const res=[...vv.others].map(([k,o])=>`${"ABCD"[k]}@${o.pos}[${o.buf}]`).join(" ");
       cfg.log.push(`${"ABCD"[me.id]} ${nx.jumped?"JUMPS "+me.pos+"→":"sends on"} ${nx.pad}   (its view: ${res})`); }
     me.pos=nx.pad; if(nx.jumped) me.dir=nx.face; me.sent++; sentCount[me.id]++;
+    if(!SELF_LAG){ v.self.pos=me.pos; v.self.dir=me.dir; }   // the party's own view follows its move (bug fix 2026-10-21)
     g++; w.used.set(nx.pad,me.id); v.used.add(nx.pad); padInfo.set(nx.pad,{by:me.id,gseq:g,jumped:nx.jumped});
     for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g,sseq:me.sent});
     deliverAfterSend();
@@ -293,7 +300,7 @@ if(!isMainThread && workerData && workerData.suiteWorker){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"":"_norule11") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="off"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);

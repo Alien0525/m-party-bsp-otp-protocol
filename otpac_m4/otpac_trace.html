@@ -180,10 +180,11 @@
 //     ignore the predicted landing of a lower-priority party and land on that slot
 //     itself, which caused reuses when the other party had already jumped. Kept as an
 //     option (sharedSlots, default OFF) for comparison runs only.
-// 11. Keep your own next pad: when an observer predicts another party K, it never
-//     predicts K into the observer's own next pad. That pad has been reserved for the
-//     observer in everyone's view all along (it could already have used it), so the
-//     party that arrived later is the one that must jump (option contested="always").
+// 11. (removed 2026-11-04) Keep your own next pad: an observer never predicted another
+//     party into its own next pad. With the observer's own position kept current (bug fix
+//     2026-10-21) it caused walking collisions: two parties walking toward each other each
+//     kept the pad between them and both used it. Kept as option contested="always"
+//     (default "off") for comparison runs only.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -209,7 +210,12 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"always", backPass:false};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off"};
+// fallback -- (experimental) when an observer predicts party K and K must jump but no node is
+//             valid in the observer's view, the observer still reserves ONE pad for K: K's
+//             landing slot at its next jumpspot, since K (or another observer) may have seen that
+//             node as valid. "first": root-most node whose slot is free, clearance ignored;
+//             "best": the node with free slot and the most clearance (min of both sides).
 // backPass -- Rule 3 extension (experimental): on the lander's BACK side, used pads and the
 //             positions of parties moving away from the node do not count as obstacles
 //             either (only parties that could come towards the landing matter).
@@ -360,6 +366,23 @@ function jumpTarget(dir,blocked,n,d,nodes,resDir,pass){
   }
   return null;                                            // no valid node -> halt
 }
+// fallback jumpspot for a party with no valid node (option `fallback`)
+function fallbackTarget(dir,blocked,n,d,nodes,resDir,pass,mode){
+  let best=null, bestScore=-1;
+  for(const M of nodes){
+    const left=M,right=M+1; if(right>n) continue;
+    if(blocked.has(left)&&blocked.has(right)) continue;
+    const cand = dir===+1 ? right : left;
+    if(blocked.has(cand)) continue;
+    if(mode==="first") return cand;
+    const front = dir===+1 ? clearOutside(right,+1,blocked,n) : clearOutside(left,-1,blocked,n);
+    const back = (OPT.oppExempt && resDir)
+      ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,pass) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,pass))
+      : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
+    const sc=Math.min(front,back); if(sc>bestScore){bestScore=sc; best=cand;}
+  }
+  return best;
+}
 function clearOutside(edge,step,blocked,n){let c=0,q=edge+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
 // as clearOutside, but a pad reserved for a party moving in `awayDir` is treated as free
 function clearOutsideExempt(edge,step,blocked,n,resDir,awayDir,pass){let c=0,q=edge+step;
@@ -406,7 +429,13 @@ function refreshBuffer(observerView,k,n,d,nodes){
     const {blocked,resDir}=predBlocked(observerView,k,fwd);
     if(keep!==null){ blocked.add(keep); resDir.delete(keep); }
     const st=predStep(observerView,k,p,dir,blocked,resDir,fwd,n,d,nodes);
-    if(!st) break;                       // K would halt here -> predict nothing further
+    if(!st){                             // K would halt here -> predict nothing further
+      if(OPT.fallback!=="off"){          // ...except one pad at K's next jumpspot (option fallback)
+        const fb=fallbackTarget(dir,blocked,n,d,nodes,resDir,passMap(observerView),OPT.fallback);
+        if(fb!=null){ if(firstJump<0) firstJump=fwd.length; fwd.push(fb); }
+      }
+      break;
+    }
     if(st.jumped && firstJump<0) firstJump=fwd.length;
     fwd.push(st.pad);
     p=st.pad; if(st.jumped) dir=st.face;
@@ -609,7 +638,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     if(w.used.has(nx.pad)){reuse={pad:nx.pad,first:w.used.get(nx.pad),second:me.id,step:steps,wasted:n-w.used.size};
       events.push({step:steps,type:"REUSE",actor:me.id,from:prev,to:nx.pad,jumped:nx.jumped,node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,
         note:`would reuse pad ${nx.pad} (used by P${w.used.get(nx.pad)}) -> protocol HALTED, ${n-w.used.size} pads wasted`,snap:snapshot()});break;}
-    me.pos=nx.pad;if(nx.jumped)me.dir=nx.face;me.sent++;
+    me.pos=nx.pad;if(nx.jumped)me.dir=nx.face;me.sent++;v.self.pos=me.pos;v.self.dir=me.dir;
     w.used.set(nx.pad,me.id);g++;v.used.add(nx.pad);sent[me.id].push(nx.pad);
     for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g,sseq:me.sent});
     deliverAfterSend();
