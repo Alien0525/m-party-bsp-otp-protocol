@@ -151,7 +151,9 @@
 //     not used; else jump; else halt.
 //  2. Jump target = BSP node (M,M+1); right-mover -> M+1, left-mover -> M;
 //     direction preserved; root-most not-fully-occupied node.
-//  3. Jump validity: >2d free pads on BOTH sides measured OUTSIDE the node. On
+//  3. Jump validity (option frontOnly, default ON): >2d free pads on the lander's FRONT side
+//     only, the side it will walk into. Old form (frontOnly=false): >2d free pads on BOTH sides
+//     measured OUTSIDE the node. On
 //     the lander's back side (the partner slot's side), pads merely reserved for
 //     parties moving the opposite way (away from the node) do not count;
 //     positions and used pads always count.
@@ -185,6 +187,9 @@
 //     2026-10-21) it caused walking collisions: two parties walking toward each other each
 //     kept the pad between them and both used it. Kept as option contested="always"
 //     (default "off") for comparison runs only.
+// 12. Halt-all (Prof. Di Crescenzo, 2026-11-04): when any party cannot send (no valid
+//     jumpspot), the whole protocol halts and all remaining pads count as wasted. This is
+//     enforced by the drivers (test suite, tracer, visualizer), not by this engine.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -210,8 +215,8 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false};
-// frontOnly -- (experimental, Aman 2026-11-04) Rule 3 checks only the lander's FRONT side, the
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true};
+// frontOnly -- (ON by default since 2026-11-04, Aman) Rule 3 checks only the lander's FRONT side, the
 //             side it will walk into (left of the node for a left-mover, right for a right-mover);
 //             the back side, behind the lander, is not checked.
 // fallback -- (experimental) when an observer predicts party K and K must jump but no node is
@@ -637,7 +642,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     deliverBefore(me.id);
     const v=views.get(me.id);v.self.pos=me.pos;v.self.dir=me.dir;
     const nx=nextSlot(me.pos,me.dir,v,n,d,w.nodes);steps++;
-    if(!nx){me.halted=true;events.push({step:steps,type:"HALT",actor:me.id,from:prev,to:prev,note:"no legal jumpspot",snap:snapshot()});continue;}
+    if(!nx){me.halted=true;for(const p of w.parties)p.halted=true;events.push({step:steps,type:"HALT",actor:me.id,from:prev,to:prev,note:`no legal jumpspot -> protocol HALTED (Rule 12), ${n-w.used.size} pads wasted`,snap:snapshot()});break;}
     if(w.used.has(nx.pad)){reuse={pad:nx.pad,first:w.used.get(nx.pad),second:me.id,step:steps,wasted:n-w.used.size};
       events.push({step:steps,type:"REUSE",actor:me.id,from:prev,to:nx.pad,jumped:nx.jumped,node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,
         note:`would reuse pad ${nx.pad} (used by P${w.used.get(nx.pad)}) -> protocol HALTED, ${n-w.used.size} pads wasted`,snap:snapshot()});break;}

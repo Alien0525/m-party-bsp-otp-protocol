@@ -1,6 +1,6 @@
 // ===========================================================================
 // OTPAC m=4 · interactive monitor (UI driver for otpac_m4.js).
-// The protocol logic lives entirely in otpac_m4.js (Rules R1-R9); this file
+// The protocol logic lives entirely in otpac_m4.js (Rules R1-R9, front-side clearance, R12 halt-all); this file
 // only schedules Sends, models the network (at most d undelivered messages per
 // recipient, as in the paper's family U^{4,n}_{A,d}) and draws the state.
 // Parties: A = P0 (->), B = P1 (<-) share arena [1, n/2]; C = P2 (->), D = P3 (<-)
@@ -116,10 +116,9 @@ function stepOnce() {
     steps++;
     const L = LETTERS[me.id];
     if (!nx) {
-        me.halted = true;
-        log(`[${steps}] ${L} @${me.pos}: next pad refused and no BSP node has > 2d = ${2 * D} free pads on both sides → ${L} halts.`, 'warn');
-        if (world.parties.every(p => p.halted)) finish();
-        renderAll(); return true;
+        for (const p of world.parties) p.halted = true;   // Rule 12: one party halts -> protocol halts
+        log(`[${steps}] ${L} @${me.pos}: next pad refused and no BSP node has > 2d = ${2 * D} free pads on its walking side → ${L} halts, so the protocol halts (Rule 12).`, 'warn');
+        finish(); renderAll(); return false;
     }
     if (world.used.has(nx.pad)) {     // edge case: views disagreed on a jump
         haltInfo = { reuse: true, pad: nx.pad, party: me.id };
