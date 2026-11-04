@@ -219,8 +219,8 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true, selfAhead:true, twoTimelines:false};
-// twoTimelines -- (Aman 2026-11-04) Rule 14. When two parties approach head-on and their
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true, selfAhead:true, twoTimelines:true};
+// twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
 //             K walks on regardless of opposite-direction reservations (the contested pads are
@@ -622,6 +622,7 @@ function assumeSkipped(view,o,pad,k,n){
   // complete accounting: the path is certain, or every possible pad was marked
   return kase!=="jump" || SKIP_JUMP_POLICY==="both";
 }
+
 
 
 if(typeof module!=="undefined") module.exports={bspNodes,initWorld,occupancy,buildBlocked,predBlocked,jumpTarget,stepOf,nextSlot,refreshBuffer,refreshAll,deliverBuffer,setSkipJumpPolicy,setOptions};
