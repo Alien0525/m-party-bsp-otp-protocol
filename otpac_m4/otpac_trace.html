@@ -60,9 +60,9 @@
 <header>
   <h1>OTPAC m=4 · individual-jump · async trace</h1>
   <div class="controls">
-    <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="256" min="16" style="width:90px"></div>
+    <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="50" min="16" style="width:90px"></div>
     <div class="fld"><label>d (buffer)</label><input id="inD" type="number" value="2" min="1" style="width:70px"></div>
-    <div class="fld"><label>seed</label><input id="inSeed" type="number" value="81" style="width:80px"></div>
+    <div class="fld"><label>seed</label><input id="inSeed" type="number" value="1002" style="width:80px"></div>
     <div class="fld"><label>delivery</label>
       <select id="inMode">
         <option value="instant">instant (synchronous)</option>
@@ -78,7 +78,7 @@
     </div>
     <div class="fld"><label>sender order</label>
       <select id="inPick">
-        <option value="random" selected>random</option>
+        <option value="random">random</option>
         <option value="rr">round-robin</option>
         <option value="flood">flood (P0 first)</option>
         <option value="flood-rev">flood-rev (P3 first)</option>
@@ -86,13 +86,23 @@
         <option value="arena-skew">arena-skew (one arena 80%)</option>
         <option value="burst">burst (runs of up to 3d)</option>
         <option value="silent1">silent1 (one party never sends)</option>
-        <option value="silent2">silent2 (two parties never send)</option>
+        <option value="silent2" selected>silent2 (two parties never send)</option>
         <option value="pair-alt">pair-alt (one pair, then the other)</option>
         <option value="greedy-gap">greedy-gap (closest-to-collision first)</option>
         <option value="stale-max">stale-max (most-undelivered first)</option>
       </select>
     </div>
     <div class="fld"><label>max steps</label><input id="inMax" type="number" value="20000" style="width:100px"></div>
+    <div class="fld"><label>known failing case</label>
+      <select id="inCase">
+        <option value="">(choose)</option>
+        <option value="50,2,1002,worst,silent2">50 · d2 · seed 1002 · worst · silent2 (step 31)</option>
+        <option value="50,2,1001,adversarial,silent1">50 · d2 · seed 1001 · adversarial · silent1 (step 32)</option>
+        <option value="50,2,1001,randcap,greedy-gap">50 · d2 · seed 1001 · randcap · greedy-gap (step 35)</option>
+        <option value="64,2,1000,randcap,greedy-gap">64 · d2 · seed 1000 · randcap · greedy-gap (step 36)</option>
+        <option value="64,2,1001,random,greedy-gap">64 · d2 · seed 1001 · random · greedy-gap (step 46)</option>
+      </select>
+    </div>
     <button id="run">Run</button>
   </div>
 </header>
@@ -836,9 +846,16 @@ function renderStep(){
 }
 
 $("run").onclick=run;
+// Load a known failing case from the dropdown.
+$("inCase").onchange=e=>{ if(!e.target.value) return; const [n,d,seed,mode,pick]=e.target.value.split(",");
+  $("inN").value=n; $("inD").value=d; $("inSeed").value=seed; $("inMode").value=mode; $("inPick").value=pick; run(); };
+// URL parameters, e.g. otpac_trace.html?n=50&d=2&seed=1002&mode=worst&pick=silent2
+try{ const q=new URLSearchParams(location.search);
+  const map={n:"inN",d:"inD",seed:"inSeed",mode:"inMode",pick:"inPick"};
+  for(const k in map) if(q.get(k)!=null) $(map[k]).value=q.get(k); }catch(err){}
 $("scrub").oninput=e=>{SEL=+e.target.value;renderLog();renderStep();};
 document.querySelectorAll('.fp,.ft').forEach(c=>c.onchange=renderLog);
-// autorun with defaults (reproduces the reuse)
+// autorun with the inputs above (defaults reproduce a reuse at step 31)
 run();
 </script>
 </body>
