@@ -7,9 +7,10 @@
 //     not used; else jump; else halt.
 //  2. Jump target = BSP node (M,M+1); right-mover -> M+1, left-mover -> M;
 //     direction preserved; root-most not-fully-occupied node.
-//  3. Jump validity (option frontOnly, default ON): >2d free pads on the lander's FRONT side
-//     only, the side it will walk into. Old form (frontOnly=false): >2d free pads on BOTH sides
-//     measured OUTSIDE the node. On
+//  3. Jump validity: >2d free pads on BOTH sides of the node, measured OUTSIDE the node.
+//     A pad in another party's reserved/held buffer counts as taken, so the check runs
+//     from that party's furthest reserved pad, not from its believed position (option
+//     frontOnly=true checks only the lander's front side; off since 2026-11-06). On
 //     the lander's back side (the partner slot's side), pads merely reserved for
 //     parties moving the opposite way (away from the node) do not count;
 //     positions and used pads always count.
@@ -75,7 +76,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true, selfAhead:true, twoTimelines:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -90,7 +91,8 @@ const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, con
 //             unchanged. Drivers also recompute every prediction after a party's own move,
 //             so "reserved" always holds only currently legal spots; earlier reservations stay
 //             in "held" (Rule 9) and are never used.
-// frontOnly -- (ON by default since 2026-11-04, Aman) Rule 3 checks only the lander's FRONT side, the
+// frontOnly -- (OFF by default again since 2026-11-06, Aman: a lander must also check its back
+//             side, where a same-direction party may be walking toward the node) Rule 3 checks only the lander's FRONT side, the
 //             side it will walk into (left of the node for a left-mover, right for a right-mover);
 //             the back side, behind the lander, is not checked.
 // fallback -- (experimental) when an observer predicts party K and K must jump but no node is

@@ -60,17 +60,17 @@
 <header>
   <h1>OTPAC m=4 · individual-jump · async trace</h1>
   <div class="controls">
-    <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="50" min="16" style="width:90px"></div>
+    <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="200" min="16" style="width:90px"></div>
     <div class="fld"><label>d (buffer)</label><input id="inD" type="number" value="2" min="1" style="width:70px"></div>
     <div class="fld"><label>seed</label><input id="inSeed" type="number" value="1002" style="width:80px"></div>
     <div class="fld"><label>delivery</label>
       <select id="inMode">
         <option value="instant">instant (synchronous)</option>
-        <option value="worst" selected>worst (latest legal, FIFO)</option>
+        <option value="worst">worst (latest legal, FIFO)</option>
         <option value="random">random (≤d)</option>
         <option value="adversarial">adversarial</option>
         <option value="lifo">lifo (newest released first)</option>
-        <option value="randcap">randcap (random msg released)</option>
+        <option value="randcap" selected>randcap (random msg released)</option>
         <option value="shuffle">shuffle (random early, random order)</option>
         <option value="target-sender">target-sender (one sender delayed)</option>
         <option value="target-recv">target-recv (one recipient delayed)</option>
@@ -86,9 +86,9 @@
         <option value="arena-skew">arena-skew (one arena 80%)</option>
         <option value="burst">burst (runs of up to 3d)</option>
         <option value="silent1">silent1 (one party never sends)</option>
-        <option value="silent2" selected>silent2 (two parties never send)</option>
+        <option value="silent2">silent2 (two parties never send)</option>
         <option value="pair-alt">pair-alt (one pair, then the other)</option>
-        <option value="greedy-gap">greedy-gap (closest-to-collision first)</option>
+        <option value="greedy-gap" selected>greedy-gap (closest-to-collision first)</option>
         <option value="stale-max">stale-max (most-undelivered first)</option>
       </select>
     </div>
@@ -96,11 +96,11 @@
     <div class="fld"><label>known failing case</label>
       <select id="inCase">
         <option value="">(choose)</option>
-        <option value="50,2,1002,worst,silent2">50 · d2 · seed 1002 · worst · silent2 (step 31)</option>
-        <option value="50,2,1001,adversarial,silent1">50 · d2 · seed 1001 · adversarial · silent1 (step 32)</option>
-        <option value="50,2,1001,randcap,greedy-gap">50 · d2 · seed 1001 · randcap · greedy-gap (step 35)</option>
-        <option value="64,2,1000,randcap,greedy-gap">64 · d2 · seed 1000 · randcap · greedy-gap (step 36)</option>
-        <option value="64,2,1001,random,greedy-gap">64 · d2 · seed 1001 · random · greedy-gap (step 46)</option>
+        <option value="200,2,1002,randcap,greedy-gap">200 · d2 · seed 1002 · randcap · greedy-gap (step 157)</option>
+        <option value="200,1,1002,shuffle,arena-skew">200 · d1 · seed 1002 · shuffle · arena-skew (step 168)</option>
+        <option value="256,2,14,worst,greedy-gap">256 · d2 · seed 14 · worst · greedy-gap (step 206)</option>
+        <option value="256,2,26,adversarial,silent1">256 · d2 · seed 26 · adversarial · silent1 (step 189)</option>
+        <option value="256,2,98,adversarial,skew">256 · d2 · seed 98 · adversarial · skew (step 180)</option>
       </select>
     </div>
     <button id="run">Run</button>
@@ -161,9 +161,10 @@
 //     not used; else jump; else halt.
 //  2. Jump target = BSP node (M,M+1); right-mover -> M+1, left-mover -> M;
 //     direction preserved; root-most not-fully-occupied node.
-//  3. Jump validity (option frontOnly, default ON): >2d free pads on the lander's FRONT side
-//     only, the side it will walk into. Old form (frontOnly=false): >2d free pads on BOTH sides
-//     measured OUTSIDE the node. On
+//  3. Jump validity: >2d free pads on BOTH sides of the node, measured OUTSIDE the node.
+//     A pad in another party's reserved/held buffer counts as taken, so the check runs
+//     from that party's furthest reserved pad, not from its believed position (option
+//     frontOnly=true checks only the lander's front side; off since 2026-11-06). On
 //     the lander's back side (the partner slot's side), pads merely reserved for
 //     parties moving the opposite way (away from the node) do not count;
 //     positions and used pads always count.
@@ -229,7 +230,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:true, selfAhead:true, twoTimelines:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -244,7 +245,8 @@ const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, con
 //             unchanged. Drivers also recompute every prediction after a party's own move,
 //             so "reserved" always holds only currently legal spots; earlier reservations stay
 //             in "held" (Rule 9) and are never used.
-// frontOnly -- (ON by default since 2026-11-04, Aman) Rule 3 checks only the lander's FRONT side, the
+// frontOnly -- (OFF by default again since 2026-11-06, Aman: a lander must also check its back
+//             side, where a same-direction party may be walking toward the node) Rule 3 checks only the lander's FRONT side, the
 //             side it will walk into (left of the node for a left-mover, right for a right-mover);
 //             the back side, behind the lander, is not checked.
 // fallback -- (experimental) when an observer predicts party K and K must jump but no node is
@@ -855,7 +857,7 @@ try{ const q=new URLSearchParams(location.search);
   for(const k in map) if(q.get(k)!=null) $(map[k]).value=q.get(k); }catch(err){}
 $("scrub").oninput=e=>{SEL=+e.target.value;renderLog();renderStep();};
 document.querySelectorAll('.fp,.ft').forEach(c=>c.onchange=renderLog);
-// autorun with the inputs above (defaults reproduce a reuse at step 31)
+// autorun with the inputs above (defaults reproduce a reuse at step 157)
 run();
 </script>
 </body>
