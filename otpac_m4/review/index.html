@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A5 Reuse Cases</title>
+<style>
+  :root{
+    --p0:#2563eb; --p1:#16a34a; --p2:#ea580c; --p3:#9333ea;
+    --bg:#ffffff; --panel:#f6f8fa; --line:#d0d7de; --ink:#1f2328; --ink2:#59636e; --accent:#0969da; --warn:#cf222e;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0e1116; --panel:#161b22; --line:#2d333b; --ink:#e6edf3; --ink2:#9aa4b2; --accent:#58a6ff; --warn:#ff7b72;
+      --p0:#60a5fa; --p1:#4ade80; --p2:#fb923c; --p3:#c084fc;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1116; --panel:#161b22; --line:#2d333b; --ink:#e6edf3; --ink2:#9aa4b2; --accent:#58a6ff; --warn:#ff7b72;
+    --p0:#60a5fa; --p1:#4ade80; --p2:#fb923c; --p3:#c084fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:820px;margin:0 auto;padding:32px 16px 64px}
+  h1{font-size:26px;line-height:1.25;margin:0 0 6px}
+  h2{font-size:20px;margin:40px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
+  h3{font-size:17px;margin:24px 0 6px}
+  p{margin:10px 0}
+  .sub{color:var(--ink2);margin:0 0 20px}
+  a{color:var(--accent)}
+  code{font:14px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+  .p0{color:var(--p0);font-weight:600} .p1{color:var(--p1);font-weight:600} .p2{color:var(--p2);font-weight:600} .p3{color:var(--p3);font-weight:600}
+  .nav{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 8px}
+  .btn{display:inline-block;padding:8px 14px;border:1px solid var(--line);border-radius:6px;background:var(--panel);text-decoration:none;color:var(--ink);font-weight:500}
+  .btn:hover{border-color:var(--accent)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:15px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--ink2);font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:.04em}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .tablewrap{overflow-x:auto}
+  .case{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:14px 0}
+  .case .lbl{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2);margin-bottom:4px}
+  ol.steps{margin:8px 0;padding-left:22px}
+  ol.steps li{margin:6px 0}
+  .key{border-left:3px solid var(--accent);padding:4px 0 4px 14px;margin:14px 0}
+  .small{font-size:14px;color:var(--ink2)}
+  ul{padding-left:22px}
+  li{margin:4px 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>Protocol A5 (m = 4): remaining reuse cases</h1>
+  <p class="sub">Snapshot of the code on 6 November 2026. The tracer and visualizer linked here are frozen copies of that code, so every case below reproduces exactly.</p>
+
+  <div class="nav">
+    <a class="btn" href="otpac_trace.html">Step-by-step tracer</a>
+    <a class="btn" href="visualizer.html">Visualizer</a>
+  </div>
+
+  <h2>Rules in this snapshot</h2>
+  <ul>
+    <li><b>R1 to R9</b> as in the paper, with the jump check (R3) on <b>both sides</b> of the node: a landing needs more than 2d free pads on each side. Pads another party has reserved or held count as taken, so the check runs from that party's furthest reserved pad, not from its believed position.</li>
+    <li><b>R12</b> (halt-all): if any party cannot send, the protocol halts and all remaining pads count as wasted.</li>
+    <li><b>R13</b> (legal landings only): a party never predicts another party to land on one of its own next d pads. Every prediction is recomputed after each move. Earlier predictions stay in the held list and are never used (R1).</li>
+    <li><b>R14</b> (two timelines): when two parties approach head-on, each observer reserves both possible futures for each of them, walking on or jumping.</li>
+    <li><b>R15</b> (own reservation): each party also reserves its own next d pads, in both timelines, in the fixed priority order <span class="p0">P0</span>, <span class="p1">P1</span>, <span class="p2">P2</span>, <span class="p3">P3</span>. Lower-priority parties are never predicted to land on them.</li>
+  </ul>
+
+  <h2>How many runs still reuse</h2>
+  <p>These numbers come from a quick test, not the full 35,964-run suite, which has not been rerun on these rules yet.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Test set</th><th class="num">Runs</th><th class="num">Reuse</th><th class="num">Mean efficiency</th></tr></thead>
+    <tbody>
+      <tr><td>Runs that had a reuse under one of the earlier rule sets</td><td class="num">219</td><td class="num">27</td><td class="num">0.850</td></tr>
+      <tr><td>Random sample of runs that were clean under the old rules</td><td class="num">2,000</td><td class="num">5</td><td class="num">0.708</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>That is 31 distinct runs with a reuse (one run is in both sets). In all of them, the delivery bound held throughout: no party ever had more than d undelivered messages. No party ever wrote a pad that was reserved in its own view.</p>
+  <p class="small">Efficiency is lower than under the old rules mainly because of R12: at small n, one halt wastes a large share of the pad.</p>
+
+  <h2>What the 31 cases have in common</h2>
+  <div class="key">In every case, two parties disagree about <b>whether and where one of them jumps</b>. While the jump message is still in flight (it is one of the d messages allowed to be undelivered), the other party moves onto the same pad.</div>
+  <p>They disagree because each party's view of the others is a little out of date, and reservations made earlier stay held. So two views can block different pads, and two parties can compute different jump spots for the same party, or one expects a walk where the other jumps.</p>
+  <p>All 31 happen late in the run (around step 180 or later for n = 256), when free space is broken into small pieces and many parties need to jump. They split into three patterns:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Pattern</th><th class="num">Runs</th></tr></thead>
+    <tbody>
+      <tr><td>A. Two parties moving the same direction jump to the same spot</td><td class="num">16</td></tr>
+      <tr><td>B. A party walks into the spot where a same-direction party just landed</td><td class="num">13</td></tr>
+      <tr><td>C. Two parties moving toward each other, one of them just after a jump</td><td class="num">2</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>A. Both jump to the same spot</h2>
+  <div class="case">
+    <div class="lbl">Example</div>
+    n = 256, d = 2, seed 26, delivery adversarial, sender order silent1. <span class="p1">P1</span> reuses pad 16 at step 189.
+    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=26&amp;mode=adversarial&amp;pick=silent1">Open in the tracer</a>
+  </div>
+  <p><span class="p1">P1</span> and <span class="p3">P3</span> both move left. <span class="p0">P0</span> never sends and stays at pad 1.</p>
+  <ol class="steps">
+    <li>Around step 182, <span class="p1">P1</span> is still walking (at 73). It predicts that <span class="p3">P3</span> will soon have to jump, to 32, and reserves 32 for <span class="p3">P3</span>. That pad then stays in <span class="p1">P1</span>'s held list.</li>
+    <li>At step 187 <span class="p1">P1</span> is at 72. <span class="p2">P2</span> is walking toward it, so <span class="p1">P1</span> must jump. In its own view, 32 is still held for <span class="p3">P3</span>, so <span class="p1">P1</span> picks the next spot, 16.</li>
+    <li><span class="p3">P3</span> has learned that <span class="p1">P1</span> must jump. <span class="p1">P1</span> has priority, so <span class="p3">P3</span> gives 32 to <span class="p1">P1</span> and takes 16 itself. At step 188 <span class="p3">P3</span> jumps to 16.</li>
+    <li>At step 189 <span class="p1">P1</span> jumps to 16 as well.</li>
+  </ol>
+  <p>Each party gives 32 to the other: <span class="p3">P3</span> because of priority, <span class="p1">P1</span> because of the earlier reservation it keeps. Both land on the second choice.</p>
+
+  <h2>B. Walking into a fresh landing</h2>
+  <div class="case">
+    <div class="lbl">Example</div>
+    n = 256, d = 2, seed 47, delivery worst, sender order greedy-gap. <span class="p1">P1</span> reuses pad 40 at step 228.
+    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=47&amp;mode=worst&amp;pick=greedy-gap">Open in the tracer</a>
+  </div>
+  <ol class="steps">
+    <li><span class="p3">P3</span> walks left down to 51. In <span class="p3">P3</span>'s view, pads 49 and 50 are held for <span class="p0">P0</span> (an earlier prediction of <span class="p0">P0</span>'s jump). So <span class="p3">P3</span> cannot walk on, and at step 220 it jumps to 40.</li>
+    <li><span class="p1">P1</span> is at 48, behind that spot and also moving left. <span class="p1">P1</span> does not hold 49 and 50 for <span class="p0">P0</span>, so it expects <span class="p3">P3</span> simply to walk on to 51 and 50.</li>
+    <li>When <span class="p3">P3</span> jumped, the node passed the both-sides check: <span class="p1">P1</span>'s believed position and reservations were more than 2d away.</li>
+    <li><span class="p3">P3</span> then does not send again, and its last two messages (51 and the jump to 40) do not reach <span class="p1">P1</span>, which the bound allows. <span class="p1">P1</span> keeps walking, from 48 down to 41, still believing <span class="p3">P3</span> is at 52. At step 228 it steps onto 40.</li>
+  </ol>
+  <p>The 2d clearance protects the landing at the moment of the jump. It does not stop a walker that does not know about the jump from walking up to it later, if the lander stays silent.</p>
+
+  <h2>C. Head-on, right after a jump</h2>
+  <div class="case">
+    <div class="lbl">Example</div>
+    n = 256, d = 2, seed 98, delivery adversarial, sender order skew. <span class="p1">P1</span> reuses pad 162 at step 180.
+    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=98&amp;mode=adversarial&amp;pick=skew">Open in the tracer</a>
+  </div>
+  <ol class="steps">
+    <li><span class="p1">P1</span> moves left through the area around 160 to 170. While <span class="p0">P0</span> is at 16, <span class="p1">P1</span> predicts <span class="p0">P0</span> will walk to 17 and then jump to 161, so it reserves 161 for <span class="p0">P0</span>.</li>
+    <li>At step 172 <span class="p0">P0</span> jumps from 17 to 161. In <span class="p0">P0</span>'s view, <span class="p1">P1</span> is still far enough away for the node to pass the check.</li>
+    <li>That message has not reached <span class="p1">P1</span>. At step 173 <span class="p1">P1</span> is at 168, close enough that node (160,161) no longer passes the check in its view, so it now predicts <span class="p0">P0</span> will jump to 225. Pad 161 stays held for <span class="p0">P0</span>, but pad 162, where <span class="p0">P0</span> walks right after landing on 161, was never reserved.</li>
+    <li>At step 178 <span class="p0">P0</span> walks to 162. Neither of its last two messages has reached <span class="p1">P1</span>, which still believes <span class="p0">P0</span> is at 17. At step 180 <span class="p1">P1</span> walks from 163 onto 162.</li>
+  </ol>
+
+  <h2>Open question</h2>
+  <p>In all three patterns, a held reservation covers the jump spot one party predicted earlier, but not the spot the jumper actually picks from its own view. Two directions we have looked at:</p>
+  <ul>
+    <li>Make every party compute the same jump spot (for example, strict priority applied to held reservations too). This would fix pattern A, but it means sometimes freeing a held reservation.</li>
+    <li>Have every party reserve every party's jump spot in advance, even when it is not about to jump. We tested this: it fixed some cases but caused more reuses overall (23 in the 2,000-run sample) and lower efficiency, so it is not in this snapshot.</li>
+  </ul>
+
+  <p class="small" style="margin-top:40px">Case numbers in the tracer: N = n, d = d, seed, delivery = mode, sender order = schedule. In the tracer, click a step in the log on the right to see each party's view at that point (believed positions, reserved and held pads).</p>
+</main>
+</body>
+</html>

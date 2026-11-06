@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTPAC m=4 — individual-jump trace</title>
+<style>
+  :root{
+    --p0:#2563eb; --p1:#16a34a; --p2:#ea580c; --p3:#9333ea;
+    --bg:#0e1116; --panel:#161b22; --line:#2d333b; --ink:#e6edf3; --ink2:#9aa4b2;
+    --used:#3b1d1d; --reuse:#ef4444;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:12px 16px;border-bottom:1px solid var(--line)}
+  h1{font-size:15px;margin:0 0 8px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+  .fld{display:flex;flex-direction:column;gap:2px}
+  .fld label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+  input,select,button{background:#0d1117;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
+  button{cursor:pointer;background:#1f6feb;border-color:#1f6feb}
+  button:hover{background:#388bfd}
+  main{display:grid;grid-template-columns:1fr 420px;gap:0;height:calc(100vh - 92px)}
+  #left{overflow:auto;padding:12px 16px;border-right:1px solid var(--line)}
+  #right{overflow:auto;padding:12px 16px}
+  .p0{color:var(--p0)} .p1{color:var(--p1)} .p2{color:var(--p2)} .p3{color:var(--p3)}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle;margin-right:4px}
+  .b0{background:var(--p0)} .b1{background:var(--p1)} .b2{background:var(--p2)} .b3{background:var(--p3)}
+  .status{margin:8px 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+  .status.reuse{border-color:var(--reuse);color:#ffb4b4}
+  .status.clean{border-color:#2ea043;color:#9be7a6}
+  /* pad strip */
+  #strip{margin:10px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  #stripCanvas{display:block;width:100%;height:70px;background:#0b0e13}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0;font-size:11px;color:var(--ink2)}
+  /* per-party views */
+  .views{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+  .view{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:8px}
+  .view h3{margin:0 0 6px;font-size:12px}
+  .view .row{font-size:12px;padding:1px 0}
+  .view .buf{color:var(--ink2)}
+  .mut{color:var(--ink2)}
+  /* log */
+  .logtools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px}
+  .logtools label{font-size:12px;color:var(--ink2);display:flex;gap:4px;align-items:center}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:3px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{position:sticky;top:0;background:var(--panel);z-index:1}
+  tr.sel{background:#132132}
+  tr.evReuse td{background:#3b1414;color:#ffb4b4}
+  tr.evJump td{font-weight:700}
+  tr:hover td{background:#0f1620;cursor:pointer}
+  .pill{display:inline-block;padding:0 6px;border-radius:10px;font-size:10px;border:1px solid var(--line)}
+  .scrub{display:flex;gap:8px;align-items:center;margin:6px 0}
+  .scrub input[type=range]{flex:1}
+  code{color:#d2a8ff}
+</style>
+</head>
+<body>
+<header>
+  <h1>OTPAC m=4 · individual-jump · async trace <a href="index.html" style="font-size:13px;color:#58a6ff;font-weight:400">← reuse cases</a></h1>
+  <div class="controls">
+    <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="256" min="16" style="width:90px"></div>
+    <div class="fld"><label>d (buffer)</label><input id="inD" type="number" value="2" min="1" style="width:70px"></div>
+    <div class="fld"><label>seed</label><input id="inSeed" type="number" value="26" style="width:80px"></div>
+    <div class="fld"><label>delivery</label>
+      <select id="inMode">
+        <option value="instant">instant (synchronous)</option>
+        <option value="worst">worst (latest legal, FIFO)</option>
+        <option value="random">random (≤d)</option>
+        <option value="adversarial" selected>adversarial</option>
+        <option value="lifo">lifo (newest released first)</option>
+        <option value="randcap">randcap (random msg released)</option>
+        <option value="shuffle">shuffle (random early, random order)</option>
+        <option value="target-sender">target-sender (one sender delayed)</option>
+        <option value="target-recv">target-recv (one recipient delayed)</option>
+      </select>
+    </div>
+    <div class="fld"><label>sender order</label>
+      <select id="inPick">
+        <option value="random">random</option>
+        <option value="rr">round-robin</option>
+        <option value="flood">flood (P0 first)</option>
+        <option value="flood-rev">flood-rev (P3 first)</option>
+        <option value="skew">skew (one party 70%)</option>
+        <option value="arena-skew">arena-skew (one arena 80%)</option>
+        <option value="burst">burst (runs of up to 3d)</option>
+        <option value="silent1" selected>silent1 (one party never sends)</option>
+        <option value="silent2">silent2 (two parties never send)</option>
+        <option value="pair-alt">pair-alt (one pair, then the other)</option>
+        <option value="greedy-gap">greedy-gap (closest-to-collision first)</option>
+        <option value="stale-max">stale-max (most-undelivered first)</option>
+      </select>
+    </div>
+    <div class="fld"><label>max steps</label><input id="inMax" type="number" value="20000" style="width:100px"></div>
+    <div class="fld"><label>known failing case</label>
+      <select id="inCase">
+        <option value="">(choose)</option>
+        <option value="256,2,26,adversarial,silent1">256 · d2 · seed 26 · adversarial · silent1 (step 189)</option>
+        <option value="256,2,98,adversarial,skew">256 · d2 · seed 98 · adversarial · skew (step 180)</option>
+        <option value="256,2,64,randcap,silent1">256 · d2 · seed 64 · randcap · silent1 (step 190)</option>
+        <option value="256,2,24,worst,skew">256 · d2 · seed 24 · worst · skew (step 208)</option>
+        <option value="256,2,47,worst,greedy-gap">256 · d2 · seed 47 · worst · greedy-gap (step 228)</option>
+      </select>
+    </div>
+    <button id="run">Run</button>
+  </div>
+</header>
+
+<main>
+  <div id="left">
+    <div id="statusBox" class="status mut">Set inputs and press Run.</div>
+
+    <div class="legend">
+      <span><span class="dot b0"></span>P0 (→)</span>
+      <span><span class="dot b1"></span>P1 (←)</span>
+      <span><span class="dot b2"></span>P2 (→)</span>
+      <span><span class="dot b3"></span>P3 (←)</span>
+      <span><span class="dot" style="background:#3b1d1d"></span>used pad</span>
+      <span><span class="dot" style="background:#ef4444"></span>reuse</span>
+    </div>
+
+    <div id="strip"><canvas id="stripCanvas" width="1200" height="70"></canvas></div>
+
+    <div class="scrub">
+      <span class="mut">step</span>
+      <input id="scrub" type="range" min="0" max="0" value="0">
+      <span id="scrubLbl" class="mut">0 / 0</span>
+    </div>
+
+    <div class="views" id="views"></div>
+  </div>
+
+  <div id="right">
+    <div class="logtools">
+      <strong>Log</strong>
+      <label><input type="checkbox" class="fp" value="0" checked><span class="p0">P0</span></label>
+      <label><input type="checkbox" class="fp" value="1" checked><span class="p1">P1</span></label>
+      <label><input type="checkbox" class="fp" value="2" checked><span class="p2">P2</span></label>
+      <label><input type="checkbox" class="fp" value="3" checked><span class="p3">P3</span></label>
+      <span class="mut">|</span>
+      <label><input type="checkbox" class="ft" value="WALK" checked>walk</label>
+      <label><input type="checkbox" class="ft" value="JUMP" checked>jump</label>
+      <label><input type="checkbox" class="ft" value="HALT" checked>halt</label>
+      <label><input type="checkbox" class="ft" value="REUSE" checked>reuse</label>
+    </div>
+    <table id="logTable"><thead><tr>
+      <th>#</th><th>actor</th><th>event</th><th>from→to</th><th>node</th><th>note</th>
+    </tr></thead><tbody id="logBody"></tbody></table>
+  </div>
+</main>
+
+<script>
+"use strict";
+// ======================= ENGINE (identical to otpac_m4.js) =======================
+// ===========================================================================
+// Asynchronous m=4 OTPAC simulator -- INDIVIDUAL-JUMP design.
+//
+// RULES:
+//  1. Own Send / security: use pos+dir only if it is in NO reserved buffer and
+//     not used; else jump; else halt.
+//  2. Jump target = BSP node (M,M+1); right-mover -> M+1, left-mover -> M;
+//     direction preserved; root-most not-fully-occupied node.
+//  3. Jump validity: >2d free pads on BOTH sides of the node, measured OUTSIDE the node.
+//     A pad in another party's reserved/held buffer counts as taken, so the check runs
+//     from that party's furthest reserved pad, not from its believed position (option
+//     frontOnly=true checks only the lander's front side; off since 2026-11-06). On
+//     the lander's back side (the partner slot's side), pads merely reserved for
+//     parties moving the opposite way (away from the node) do not count;
+//     positions and used pads always count.
+//  4. Predictions are RECOMPUTED fresh on any occupancy change (walk-predicted
+//     pads are additionally held, Rule 9).
+//  5. Reservations are DISJOINT: a pad reserved for one party is not reserved
+//     for another (prediction treats others' buffers as obstacles too).
+//  6. Speculative-jumpspot invalidation: a jumpspot is PREDICTED only while it
+//     passes Rule 3; once an approaching party breaks its clearance it is no
+//     longer predicted for new reservations (a pad already reserved for it stays
+//     held under Rule 9 until the party's messages prove it unused).
+//  7. On every Receive, re-validate ALL tracked parties' buffers, not just the
+//     sender's.
+//  8. Message order (header carries a per-sender message #):
+//     (a) an OLDER message only marks its pad used -- it never moves the
+//         sender's believed position backward;
+//     (b) a NEWER message that skips k numbers means the sender used k pads on
+//         the way; those pads are marked occupied, carefully around jumps:
+//         only the reservation if the sender provably followed it, only the
+//         straight-line pads if it provably walked, and for an unforeseen jump
+//         every pad it could have used (see assumeSkipped).
+//  9. Sticky reservations: a predicted pad (walk or jump) stays reserved until
+//     all of the party's messages up to the one it was predicted for have arrived
+//     or been accounted for by Rule 8(b) (then it is known used or proven unused).
+// 10. (removed 2026-10-17) Shared slot assignment by party priority. It made a party
+//     ignore the predicted landing of a lower-priority party and land on that slot
+//     itself, which caused reuses when the other party had already jumped. Kept as an
+//     option (sharedSlots, default OFF) for comparison runs only.
+// 11. (removed 2026-11-04) Keep your own next pad: an observer never predicted another
+//     party into its own next pad. With the observer's own position kept current (bug fix
+//     2026-10-21) it caused walking collisions: two parties walking toward each other each
+//     kept the pad between them and both used it. Kept as option contested="always"
+//     (default "off") for comparison runs only.
+// 13. Legal landings only (selfAhead, default ON): an observer never predicts another party
+//     to land on one of the observer's own next d pads, and every prediction is recomputed
+//     after each move (the observer's own included). "reserved" = current legal prediction;
+//     pads reserved earlier stay "held" until resolved (Rule 9). Neither is ever used (R1).
+// 12. Halt-all (Prof. Di Crescenzo, 2026-11-04): when any party cannot send (no valid
+//     jumpspot), the whole protocol halts and all remaining pads count as wasted. This is
+//     enforced by the drivers (test suite, tracer, visualizer), not by this engine.
+// 15. Own reservation (selfRes, default ON, Aman 2026-11-06): every observer also reserves its
+//     OWN next d pads (walking, or its jump landing and the walk after it), computed in its
+//     place in the priority order P0, P1, P2, P3. Lower-priority parties are never predicted
+//     to land on them, so a party about to jump keeps the jumpspot everyone else predicts
+//     for it instead of leaving it to a same-direction party that jumps after it.
+//     Like the reservations others make for it (Rule 14), it covers both timelines (walk W and,
+//     when an opposite-direction party's walk blocks it, jump J), and earlier own reservations
+//     stay held until the observer has sent the message they were predicted for.
+// ===========================================================================
+
+function bspNodes(n){                      // static BSP center-pad pairs, root-first
+  const out=[]; const q=[[1,n]];
+  while(q.length){const [L,R]=q.shift();const M=(L+R)>>1;
+    if(M>L&&M<R){out.push(M);if(R-L>=2){q.push([L,M-1]);q.push([M+1,R]);}}}
+  return out;
+}
+
+function initWorld(n,d,m){
+  m=m||4; const parties=[]; const arenas=m/2, aw=Math.floor(n/arenas);
+  for(let a=0;a<arenas;a++){
+    const L=a*aw+1, R=(a===arenas-1)?n:(a+1)*aw;
+    parties.push({id:2*a,   pos:L, dir:+1, halted:false, sent:0});
+    parties.push({id:2*a+1, pos:R, dir:-1, halted:false, sent:0});
+  }
+  return {n,d,m,parties,used:new Map(),nodes:bspNodes(n)};
+}
+
+// Options (both ON by default; switchable for comparison runs):
+//   sticky      -- Rule 9: predicted reservations are held until proven resolved
+//   stickyJumps -- apply Rule 9 to jump-predicted pads too (default ON); OFF = those
+//                  follow the older Rule 6 (dropped as soon as the prediction changes)
+//   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
+//                parties moving the opposite way (away from the node) are not obstacles
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true};
+// twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
+//             predicted pads overlap, the order in which they will meet is unknown, so an
+//             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
+//             K walks on regardless of opposite-direction reservations (the contested pads are
+//             reserved for both), and (J) the jump timeline, where the opponent's walk timeline
+//             (or the observer's own next d pads, if the observer is the opponent) blocks K and
+//             K jumps; K's jumpspot is reserved. Both stay held (Rule 9) until K's messages
+//             resolve them. Rule 8(b) matches a skipped message against either timeline.
+// selfAhead -- (ON by default since 2026-11-04, Aman) when an observer predicts another party's
+//             LANDING, its own next d pads (the pads it will walk into) are not legal landing
+//             slots and count as occupied for that node's clearance. Walking predictions are
+//             unchanged. Drivers also recompute every prediction after a party's own move,
+//             so "reserved" always holds only currently legal spots; earlier reservations stay
+//             in "held" (Rule 9) and are never used.
+// frontOnly -- (OFF by default again since 2026-11-06, Aman: a lander must also check its back
+//             side, where a same-direction party may be walking toward the node) Rule 3 checks only the lander's FRONT side, the
+//             side it will walk into (left of the node for a left-mover, right for a right-mover);
+//             the back side, behind the lander, is not checked.
+// fallback -- (experimental) when an observer predicts party K and K must jump but no node is
+//             valid in the observer's view, the observer still reserves ONE pad for K: K's
+//             landing slot at its next jumpspot, since K (or another observer) may have seen that
+//             node as valid. "first": root-most node whose slot is free, clearance ignored;
+//             "best": the node with free slot and the most clearance (min of both sides).
+// backPass -- Rule 3 extension (experimental): on the lander's BACK side, used pads and the
+//             positions of parties moving away from the node do not count as obstacles
+//             either (only parties that could come towards the landing matter).
+// contested -- Rule 11 (experimental): a party does not give its OWN next pad away. When the
+//              observer's next pad is also the next pad another party K is predicted to walk
+//              into, the observer does not predict K into it ("always": every party keeps its
+//              own next pad; "low"/"high": only if it has the lower/higher id). The pad stays
+//              reserved for whoever others have been holding it for (Rule 9), so the party that
+//              arrived later is the one that jumps. "off" = old behaviour.
+// sharedSlots -- old Rule 10 (REMOVED, option OFF by default): jump LANDING slots are assigned in one fixed priority order
+//                (party id: P0 first), the observer's own landing included.
+function setOptions(o){ Object.assign(OPT,o); }
+
+// --- OWN-MOVE occupancy: what a sender must NOT write. Union of used pads,
+// every tracked party's confirmed position, and every tracked party's reserved
+// buffer (all of them = the security check), plus the sender's own position.
+// resDir: pad -> direction of the party it is reserved for, only for pads that are
+// blocked SOLELY by a reservation (not used, not anyone's position).
+function occupancy(view){
+  const blocked=new Set(), owner=new Map(), hard=new Set(), resDir=new Map();
+  for(const [id,o] of view.others){
+    if(typeof id!=="number") { for(const b of o.buf) blocked.add(b); continue; }
+    blocked.add(o.pos); hard.add(o.pos); owner.set(o.pos,id);
+    for(const b of o.buf){ blocked.add(b); if(!owner.has(b)) owner.set(b,id); if(!resDir.has(b)) resDir.set(b,o.dir); }
+  }
+  blocked.add(view.self.pos); hard.add(view.self.pos);
+  if(view.used) for(const u of view.used){ blocked.add(u); hard.add(u); if(!owner.has(u)) owner.set(u,'used'); }
+  for(const h of hard) resDir.delete(h);
+  return {blocked,owner,resDir};
+}
+
+// --- reservedBy: pads reserved (undelivered) for SOME OTHER party in this view,
+// used by the driver's badWrite assertion (a sender must never pick one).
+function buildBlocked(view,n){
+  const reservedBy=new Map();
+  for(const [id,o] of view.others){
+    if(typeof id!=="number") continue;
+    for(const b of o.buf){ if(!reservedBy.has(b)) reservedBy.set(b,id); }
+  }
+  return {reservedBy};
+}
+
+// --- PREDICTION occupancy for party K. Obstacles are: used pads, every OTHER
+// tracked party's confirmed position, the observer's own position, AND every
+// OTHER party's reserved buffer -- so a pad already reserved for another party
+// is NOT reserved again for K (reservations are DISJOINT). `extra` = pads already
+// placed in K's own buffer this pass. Returns {blocked, resDir} (see occupancy).
+function predBlocked(view,k,extra,skipDir){
+  const blocked=new Set(), hard=new Set(), resDir=new Map();
+  if(view.used) for(const u of view.used){ blocked.add(u); hard.add(u); }
+  for(const [id,o] of view.others){
+    if(id===k||typeof id!=="number") continue;
+    blocked.add(o.pos); hard.add(o.pos);
+    if(skipDir!==undefined && o.dir===skipDir) continue;   // Rule 14 walk timeline: ignore opposite-direction reservations
+    for(const b of o.buf){ blocked.add(b); if(!resDir.has(b)) resDir.set(b,o.dir); }   // disjoint reservations
+  }
+  blocked.add(view.self.pos); hard.add(view.self.pos);
+  if(extra) for(const e of extra){ blocked.add(e); hard.add(e); }
+  for(const h of hard) resDir.delete(h);
+  return {blocked,resDir};
+}
+
+// the observer's own id = the one party id it does not track
+function selfIdOf(view){ for(let i=0;i<=view.others.size;i++) if(!view.others.has(i)) return i; return -1; }
+
+// --- Rule 10: walls for choosing party X's LANDING slot. Starting from the normal
+// walls, drop pads that are only LANDING claims of lower-priority parties (id > X;
+// they yield to X), and add the observer's own landing claim if the observer has
+// higher priority than X. Used pads, positions, X's own pads so far and every
+// party's WALKING pads are never dropped.
+function landingWalls(view,X,blocked,resDir,extra){
+  if(!OPT.sharedSlots) return {blocked,resDir};
+  const sid=selfIdOf(view), lb=new Set(blocked), lr=new Map(resDir), prot=new Set();
+  if(view.used) for(const u of view.used) prot.add(u);
+  prot.add(view.self.pos); if(extra) for(const e of extra) prot.add(e);
+  for(const [id,o] of view.others){
+    if(typeof id!=="number") continue;
+    if(id!==X) prot.add(o.pos);
+    for(const b of (o.fwd||[])) if(!(o.landClaim&&o.landClaim.has(b))) prot.add(b);
+    if(o.held) for(const [q] of o.held) if(!(o.heldLand&&o.heldLand.has(q))) prot.add(q);
+  }
+  for(const [id,o] of view.others){
+    if(typeof id!=="number"||id===X||id<X) continue;          // only LOWER-priority parties
+    if(o.landClaim) for(const q of o.landClaim) if(!prot.has(q)){ lb.delete(q); lr.delete(q); }
+    if(o.heldLand)  for(const q of o.heldLand)  if(!prot.has(q)){ lb.delete(q); lr.delete(q); }
+  }
+  if(view.selfClaim && sid<X) for(const q of view.selfClaim){ lb.add(q); if(!prot.has(q)) lr.set(q,view.self.dir); }
+  return {blocked:lb,resDir:lr};
+}
+
+// one predicted step for party X: walk if free, else land on the slot Rule 10 gives X
+// the observer's own next d pads in its direction, up to the first used pad (option selfAhead)
+function selfAheadPads(view,n,d){
+  const out=[]; if(!OPT.selfAhead||!view.self||view.self.pos==null) return out;
+  let q=view.self.pos;
+  for(let i=0;i<d;i++){ q+=view.self.dir; if(q<1||q>n||(view.used&&view.used.has(q))) break; out.push(q); }
+  return out;
+}
+function predStep(view,X,p,dir,blocked,resDir,extra,n,d,nodes){
+  const lin=p+dir;
+  if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};
+  let L=landingWalls(view,X,blocked,resDir,extra);
+  const ahead=selfAheadPads(view,n,d);
+  if(OPT.selfRes && view.selfRes && view.selfRes.length && X>selfIdOf(view)) for(const q of view.selfRes) if(!ahead.includes(q)) ahead.push(q);   // Rule 15
+  if(ahead.length){ const b=new Set(L.blocked), r=new Map(L.resDir); for(const q of ahead){ b.add(q); r.delete(q); } L={blocked:b,resDir:r}; }
+  const t=jumpTarget(dir,L.blocked,n,d,nodes,L.resDir,passMap(view));
+  return t==null?null:{pad:t,jumped:true,face:dir};
+}
+
+// --- Rule 10: the observer's OWN prospective landing (and the walk after it within
+// d steps), so that lower-priority parties' predicted landings avoid it.
+function computeSelfClaim(view,n,d,nodes){
+  if(!OPT.sharedSlots){ view.selfClaim=null; return; }
+  const X=selfIdOf(view); let p=view.self.pos, dir=view.self.dir; const fwd=[]; let firstJump=-1;
+  for(let s=0;s<d;s++){
+    const {blocked,resDir}=occupancy(view); for(const e of fwd) blocked.add(e);
+    const st=predStep(view,X,p,dir,blocked,resDir,fwd,n,d,nodes);
+    if(!st) break;
+    if(st.jumped && firstJump<0) firstJump=fwd.length;
+    fwd.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+  }
+  view.selfClaim=new Set(firstJump<0?[]:fwd.slice(firstJump));
+}
+
+// Rule 15: the observer's own next d pads from its current view, in both timelines (as others
+// reserve them for it, Rule 14): its walk W and, if an opposite-direction party's walk timeline
+// blocks it, its jump timeline J. Earlier own reservations stay held until the observer has sent
+// the message they were predicted for (or the pad is used).
+function computeSelfRes(view,n,d,nodes){
+  if(!OPT.selfRes||!view.self||view.self.pos==null){ view.selfRes=null; return; }
+  if(view._selfLastPos!==view.self.pos){ if(view._selfLastPos!==undefined) view._selfSent=(view._selfSent||0)+1; view._selfLastPos=view.self.pos; }
+  const sent=view._selfSent||0;
+  const ownPath=extra=>{ let p=view.self.pos, dir=view.self.dir; const out=[];
+    for(let s=0;s<d;s++){
+      const {blocked,resDir}=occupancy(view); for(const e of out) blocked.add(e);
+      if(extra) for(const q of extra){ if(q!==p){ blocked.add(q); resDir.delete(q); } }
+      const st=stepOf(p,dir,blocked,n,d,nodes,resDir,passMap(view));
+      if(!st) break; out.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+    }
+    return out; };
+  const W=ownPath(null), seqs=[W];
+  if(OPT.twoTimelines){
+    const block=new Set(), Wc=view._W;
+    for(const [id,o] of view.others) if(typeof id==="number" && o.dir===-view.self.dir){
+      const wp=(Wc&&Wc.has(id))?Wc.get(id):pathFor(view,id,n,d,nodes,-o.dir,null); for(const q of wp) block.add(q); }
+    if(block.size){ const J=ownPath(block); if(J.join()!==W.join()) seqs.push(J); }
+  }
+  const held=view.selfHeld||(view.selfHeld=new Map());
+  for(const sq of seqs) for(let i=0;i<sq.length;i++){ const q=sq[i], s=sent+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
+  const out=[]; for(const sq of seqs) for(const q of sq) if(!out.includes(q)) out.push(q);
+  for(const [q,s] of [...held]){ if((view.used&&view.used.has(q))||s<=sent) held.delete(q); else if(!out.includes(q)) out.push(q); }
+  view.selfRes=out;
+}
+// recompute every party in priority order (P0 first), the observer's own claim in its place
+function refreshAll(view,n,d,nodes){
+  const sid=selfIdOf(view), N=view.others.size+1;
+  if(OPT.twoTimelines){                    // Rule 14: every party's walk timeline, once per pass
+    view._W=new Map(); for(const [id,o] of view.others) if(typeof id==="number") view._W.set(id,pathFor(view,id,n,d,nodes,-o.dir,null));
+  }
+  for(let id=0;id<N;id++){ if(id===sid){ computeSelfClaim(view,n,d,nodes); computeSelfRes(view,n,d,nodes); } else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
+  view._W=null;
+}
+
+// --- root-most not-fully-occupied node, default side by dir, >2d clearance
+// measured OUTSIDE the node's own two pads.
+//   FRONT side (the side the lander travels toward): every obstacle counts.
+//   BACK side (where the node's partner slot is): pads merely RESERVED for parties
+//     moving the OPPOSITE way -- i.e. away from this node -- do not count (e.g. a
+//     right-mover predicted to land on the partner slot M+1 and walk right does not
+//     invalidate M for a left-mover). Positions and used pads always count.
+// A jumpspot is VALID only while this returns it; when an approaching party
+// breaks the clearance it returns a different node or null (Rule 6).
+function passMap(view){
+  if(!OPT.backPass||!view) return null;
+  const m=new Map();
+  for(const [id,o] of view.others) if(typeof id==="number") m.set(o.pos,o.dir);
+  m.set(view.self.pos,view.self.dir);
+  if(view.used) for(const u of view.used) m.set(u,0);
+  return m;
+}
+function jumpTarget(dir,blocked,n,d,nodes,resDir,pass){
+  for(const M of nodes){
+    const left=M,right=M+1; if(right>n) continue;
+    if(blocked.has(left)&&blocked.has(right)) continue;   // fully occupied -> descend
+    const cand = dir===+1 ? right : left;
+    if(blocked.has(cand)) continue;                       // my slot taken -> descend
+    const front = dir===+1 ? clearOutside(right,+1,blocked,n) : clearOutside(left,-1,blocked,n);
+    const back = (OPT.oppExempt && resDir)
+      ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,pass) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,pass))
+      : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
+    if(front > 2*d && (OPT.frontOnly || back > 2*d)) return cand;
+  }
+  return null;                                            // no valid node -> halt
+}
+// fallback jumpspot for a party with no valid node (option `fallback`)
+function fallbackTarget(dir,blocked,n,d,nodes,resDir,pass,mode){
+  let best=null, bestScore=-1;
+  for(const M of nodes){
+    const left=M,right=M+1; if(right>n) continue;
+    if(blocked.has(left)&&blocked.has(right)) continue;
+    const cand = dir===+1 ? right : left;
+    if(blocked.has(cand)) continue;
+    if(mode==="first") return cand;
+    const front = dir===+1 ? clearOutside(right,+1,blocked,n) : clearOutside(left,-1,blocked,n);
+    const back = (OPT.oppExempt && resDir)
+      ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,pass) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,pass))
+      : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
+    const sc=OPT.frontOnly?front:Math.min(front,back); if(sc>bestScore){bestScore=sc; best=cand;}
+  }
+  return best;
+}
+function clearOutside(edge,step,blocked,n){let c=0,q=edge+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
+// as clearOutside, but a pad reserved for a party moving in `awayDir` is treated as free
+function clearOutsideExempt(edge,step,blocked,n,resDir,awayDir,pass){let c=0,q=edge+step;
+  while(q>=1&&q<=n&&(!blocked.has(q)||resDir.get(q)===awayDir||(pass&&pass.has(q)&&(pass.get(q)===0||pass.get(q)===awayDir)))){c++;q+=step;}return c;}
+function clearance(p,step,blocked,n){let c=0,q=p+step;while(q>=1&&q<=n&&!blocked.has(q)){c++;q+=step;}return c;}
+
+// --- one step of a path: WALK if next linear pad free of `blocked`, else JUMP
+// to the root-most VALID node. Returns {pad, jumped, face} or null (halt).
+function stepOf(pos,dir,blocked,n,d,nodes,resDir,pass){
+  const lin=pos+dir;
+  if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};  // walk
+  const t=jumpTarget(dir,blocked,n,d,nodes,resDir,pass);                              // overlap -> jump
+  if(t==null) return null;
+  return {pad:t,jumped:true,face:dir};
+}
+
+// Public: a party's OWN next move, from its view (union-of-buffers occupancy).
+function nextSlot(pos,dir,view,n,d,nodes){
+  const {blocked,resDir}=occupancy(view);
+  return stepOf(pos,dir,blocked,n,d,nodes,resDir,passMap(view));
+}
+
+// --- K's reserved buffer = FRESH prediction + HELD (sticky) pads.
+//   fwd: K's next d pads from K's confirmed position, jump-aware, recomputed on
+//        every occupancy change. Jump-predicted pads (a landing and the walk after
+//        it) live only here, so an invalidated jumpspot drops (Rule 6).
+//   held (Rule 9): every predicted pad (with stickyJumps OFF: only those before the
+//        first predicted jump) is also remembered with the message # it was
+//        predicted for, and stays reserved until all of K's messages up to that #
+//        have arrived or been accounted for (then it is known used or proven unused).
+// Rule 14: K's predicted path under a given set of extra obstacles / ignored reservations.
+function pathFor(view,k,n,d,nodes,skipDir,extraBlock){
+  const ko=view.others.get(k); let p=ko.pos, dir=ko.dir; const fwd=[];
+  for(let s=0;s<d;s++){
+    const {blocked,resDir}=predBlocked(view,k,fwd,skipDir);
+    if(extraBlock) for(const q of extraBlock){ if(q!==p){ blocked.add(q); resDir.delete(q); } }
+    const st=predStep(view,k,p,dir,blocked,resDir,fwd,n,d,nodes);
+    if(!st) break;
+    fwd.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+  }
+  return fwd;
+}
+// the observer's own next d pads, regardless of selfAhead (Rule 14 jump timeline)
+function ownAhead(view,n,d){
+  const out=[]; if(!view.self||view.self.pos==null) return out; let q=view.self.pos;
+  for(let i=0;i<d;i++){ q+=view.self.dir; if(q<1||q>n||(view.used&&view.used.has(q))) break; out.push(q); }
+  return out;
+}
+function refreshTimelines(observerView,k,n,d,nodes){
+  const ko=observerView.others.get(k), dir=ko.dir;
+  const Wc=observerView._W, wOf=(id,o)=>(Wc&&Wc.has(id))?Wc.get(id):pathFor(observerView,id,n,d,nodes,-o.dir,null);
+  const W=wOf(k,ko);                                                    // walk timeline
+  const block=new Set();
+  for(const [id,o] of observerView.others) if(id!==k && typeof id==="number" && o.dir===-dir)
+    for(const q of wOf(id,o)) block.add(q);                             // opponents' walk timelines
+  if(observerView.self && observerView.self.dir===-dir) for(const q of ownAhead(observerView,n,d)) block.add(q);
+  const J=pathFor(observerView,k,n,d,nodes,undefined,block);           // jump timeline
+  const seqs=[J]; if(W.join()!==J.join()) seqs.push(W);
+  const fwd=J.slice(); for(const q of W) if(!fwd.includes(q)) fwd.push(q);
+  ko.seqs=seqs; ko.fwd=fwd; ko.landClaim=new Set();
+  const buf=fwd.slice();
+  if(OPT.sticky){
+    const held=ko.held||(ko.held=new Map()), heldLand=ko.heldLand||(ko.heldLand=new Set());
+    const last=ko.lastNum||0;
+    for(const sq of seqs) for(let i=0;i<sq.length;i++){ const q=sq[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
+    const used=observerView.used;
+    for(const [q] of held){ if(used&&used.has(q)){ held.delete(q); heldLand.delete(q); } else if(!buf.includes(q)) buf.push(q); }
+  }
+  ko.buf=buf;
+}
+function refreshBuffer(observerView,k,n,d,nodes){
+  const ko=observerView.others.get(k);
+  if(!ko) return;
+  if(OPT.twoTimelines) return refreshTimelines(observerView,k,n,d,nodes);
+  ko.seqs=null;
+  let p=ko.pos, dir=ko.dir;
+  const fwd=[]; let firstJump=-1;
+  // Rule 11: the observer keeps its own next pad if it has priority over K
+  let keep=null;
+  if(OPT.contested!=="off"){
+    const sid=selfIdOf(observerView), sn=observerView.self.pos+observerView.self.dir;
+    const prio = OPT.contested==="always" ? true : OPT.contested==="low" ? sid<k : sid>k;
+    if(prio && sn>=1 && sn<=n && !(observerView.used&&observerView.used.has(sn))) keep=sn;
+  }
+  for(let s=0;s<d;s++){
+    const {blocked,resDir}=predBlocked(observerView,k,fwd);
+    if(keep!==null){ blocked.add(keep); resDir.delete(keep); }
+    const st=predStep(observerView,k,p,dir,blocked,resDir,fwd,n,d,nodes);
+    if(!st){                             // K would halt here -> predict nothing further
+      if(OPT.fallback!=="off"){          // ...except one pad at K's next jumpspot (option fallback)
+        const fb=fallbackTarget(dir,blocked,n,d,nodes,resDir,passMap(observerView),OPT.fallback);
+        if(fb!=null){ if(firstJump<0) firstJump=fwd.length; fwd.push(fb); }
+      }
+      break;
+    }
+    if(st.jumped && firstJump<0) firstJump=fwd.length;
+    fwd.push(st.pad);
+    p=st.pad; if(st.jumped) dir=st.face;
+  }
+  ko.fwd=fwd;
+  ko.landClaim=new Set(firstJump<0?[]:fwd.slice(firstJump));   // Rule 10: predicted landing (+ walk after it)
+  const buf=fwd.slice();
+  if(OPT.sticky){
+    const held=ko.held||(ko.held=new Map());          // pad -> message # it was predicted for
+    const heldLand=ko.heldLand||(ko.heldLand=new Set());  // held pads that were predicted LANDING pads
+    const last=ko.lastNum||0, lin=(OPT.stickyJumps||firstJump<0)?fwd.length:firstJump;
+    for(let i=0;i<lin;i++){ const q=fwd[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s);
+      if(firstJump>=0 && i>=firstJump) heldLand.add(q); else heldLand.delete(q); }
+    const used=observerView.used;
+    for(const [q] of held){ if(used&&used.has(q)){ held.delete(q); heldLand.delete(q); } else if(!buf.includes(q)) buf.push(q); }
+  }
+  ko.buf=buf;
+}
+
+// --- RECEIVE: observer hears party `fromId` used pad `pad` moving `dir`, in
+// that party's message number `num` (header = sender, pad, message #).
+//
+//   OLDER message (num <= highest # already received from this sender):
+//     only mark `pad` as used. The believed position/direction do NOT move
+//     (an older message must never move a party backward).
+//   NEWER message that skips k numbers (num = last + 1 + k):
+//     the party must have used k pads to get here, so the first k pads of the
+//     current reservation for it are ASSUMED OCCUPIED (marked used). Then the
+//     believed position/direction move to `pad`.
+//
+// Then RE-VALIDATE EVERY tracked party's buffer, because this move may have
+// invalidated another party's speculative jumpspot or freed pads it can now
+// reserve. (If `num` is omitted, falls back to the old behaviour: always move.)
+function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
+  const o=observerView.others.get(fromId);
+  if(!o) return;
+  if(observerView.used) observerView.used.add(pad);
+  const last=o.lastNum||0;
+  const recv=o.recv||(o.recv=new Set());
+  if(num===undefined || num>last){
+    if(num!==undefined){
+      const k=num-last-1;                                    // messages skipped
+      if(k>0){
+        // Rule 8(b) marks every pad the skipped messages could have used; if that
+        // accounting is complete, the skipped numbers count as resolved (Rule 9).
+        const accounted=assumeSkipped(observerView,o,pad,k,n);
+        if(accounted) for(let c=last+1;c<num;c++) recv.add(c);
+      }
+      o.lastNum=num;
+    }
+    o.pos=pad; if(dir!==undefined) o.dir=dir;
+  }
+  if(num!==undefined){
+    // Rule 9: once messages 1..prefix are all received or accounted for, every held
+    // pad predicted for a message # <= prefix is resolved (known used, or proven unused).
+    recv.add(num);
+    o.prefix=o.prefix||0; while(recv.has(o.prefix+1)) o.prefix++;
+    if(o.held) for(const [q,s] of o.held) if(s<=o.prefix){ o.held.delete(q); if(o.heldLand) o.heldLand.delete(q); }
+  }
+  // else: older message -> pad is marked used above; position stays where it is
+  refreshAll(observerView,n,d,nodes);   // every party, in priority order (Rule 10)
+}
+
+// --- Rule 8(b): party K sent k messages we have not received between its last
+// confirmed pad (o.pos) and `pad`. Mark as occupied the pads K used for them.
+// K's direction never changes (direction is preserved across jumps).
+//  (i)  PREDICTED: `pad` is the (k+1)-th pad of our current reservation for K, so K
+//       followed the predicted path (walks and any predicted jump) -> the first k
+//       reserved pads are certain.
+//  (ii) STRAIGHT WALK: pad = o.pos + (k+1)*dir. A jump can never land there (a
+//       landing needs >2d free pads around it), so K walked -> the k pads between
+//       are certain, whatever the reservation said.
+//  (iii) UNFORESEEN JUMP: K walked j pads (0<=j<=k), jumped, then walked into `pad`;
+//       j is unknown, so which pads K used is unknown. Policy (SKIP_JUMP_POLICY):
+//         "both"   (default) mark every pad K could have used: the k pads right
+//                  after o.pos and the k pads right before `pad` (<= k extra pads);
+//         "guided" guess j from our reservation's walk prefix (pads it predicted K
+//                  would walk before jumping) and mark only that guess;
+//         "none"   mark nothing.
+let SKIP_JUMP_POLICY="both";
+function setSkipJumpPolicy(p){ SKIP_JUMP_POLICY=p; }
+function assumeSkipped(view,o,pad,k,n){
+  const dir=o.dir, marks=[]; let kase; const pred=o.fwd||o.buf;   // the fresh prediction, in order
+  const hit=(o.seqs||[pred]).find(sq=>sq.length>k && sq[k]===pad);   // Rule 14: either timeline
+  if(hit){ kase="predicted"; for(let i=0;i<k;i++) marks.push(hit[i]); }
+  else if(pad===o.pos+(k+1)*dir){ kase="straight"; for(let i=1;i<=k;i++) marks.push(o.pos+i*dir); }
+  else {
+    kase="jump";
+    if(SKIP_JUMP_POLICY==="both"){ for(let i=1;i<=k;i++){ marks.push(o.pos+i*dir); marks.push(pad-i*dir); } }
+    else if(SKIP_JUMP_POLICY==="guided"){
+      let j=0; while(j<k && j<pred.length && pred[j]===o.pos+(j+1)*dir) j++;     // predicted walks before the jump
+      for(let i=1;i<=j;i++) marks.push(o.pos+i*dir);                          // pre-jump walks
+      for(let i=1;i<=k-j;i++) marks.push(pad-i*dir);                           // landing + walks after it
+    }
+  }
+  for(const q of marks){
+    if(q<1||q>n) continue;
+    if(view.used) view.used.add(q);
+    (o.assumed=o.assumed||[]).push(q);                        // for display
+    (o.assumedLog=o.assumedLog||[]).push({pad:q,kase});       // for test statistics
+  }
+  // complete accounting: the path is certain, or every possible pad was marked
+  return kase!=="jump" || SKIP_JUMP_POLICY==="both";
+}
+
+
+
+if(typeof module!=="undefined") module.exports={bspNodes,initWorld,occupancy,buildBlocked,predBlocked,jumpTarget,stepOf,nextSlot,refreshBuffer,refreshAll,deliverBuffer,setSkipJumpPolicy,setOptions};
+
+// ======================= DRIVER (matches finalcap.js exactly) =======================
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+// Driver = identical logic (and RNG call order) to otpac_test_suite.js, so any
+// case from the suite (n,d,seed,mode,schedule) replays here exactly.
+// Delivery modes (all keep <= d undelivered per recipient):
+//   instant, worst, random, adversarial, lifo, randcap, shuffle, target-sender, target-recv
+// Sender schedules: random, rr, flood, flood-rev, skew, arena-skew, burst,
+//   silent1, silent2, pair-alt, greedy-gap, stale-max
+// HALT-ON-REUSE: if a party is about to use an already-used pad, the whole
+// protocol halts before that send; all unused pads count as wasted.
+function simulate(n,d,seed,mode,pick,maxSteps){
+  const sched=pick;
+  const w=initWorld(n,d,4);const rng=mulberry32(seed);
+  const aux=mulberry32(((seed*2654435761)>>>0) ^ 0x5bd1e995);
+  const ids=w.parties.map(p=>p.id);const P=id=>w.parties.find(p=>p.id===id);
+  const targetParty=ids[Math.floor(aux()*4)], fav=ids[Math.floor(aux()*4)], favArena=Math.floor(aux()*2);
+  const sil1=ids[Math.floor(aux()*4)], sil2=ids[(ids.indexOf(sil1)+1+Math.floor(aux()*3))%4];
+  const silent=new Set(sched==="silent1"?[sil1]:sched==="silent2"?[sil1,sil2]:[]);
+  const firstPair=Math.floor(aux()*2);
+  const sent={0:[],1:[],2:[],3:[]};const heard={};
+  for(const o of w.parties){heard[o.id]={};for(const k of w.parties)if(k.id!==o.id)heard[o.id][k.id]=0;}
+  const views=new Map();
+  for(const me of w.parties){const others=new Map();for(const k of w.parties)if(k.id!==me.id)others.set(k.id,{pos:k.pos,dir:k.dir,buf:[]});
+    const v={self:{pos:me.pos,dir:me.dir},others,used:new Set()};
+    for(const k of w.parties)if(k.id!==me.id)refreshBuffer(v,k.id,n,d,w.nodes);views.set(me.id,v);}
+  const inflight=[];let g=0;
+  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);heard[rid][m.from]++;}
+  function removeSet(del){if(!del.size)return;const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);}
+  function deliverBefore(rid){
+    if(mode==="random"||mode==="adversarial"){const pe=mode==="random"?0.5:0.1;const del=new Set();
+      for(const m of inflight.filter(m=>m.to===rid)){if(rng()<pe){applyRecv(rid,m);del.add(m);}}removeSet(del);}
+    else if(mode==="shuffle"){const mine=inflight.filter(m=>m.to===rid);
+      for(let i=mine.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[mine[i],mine[j]]=[mine[j],mine[i]];}
+      const del=new Set();for(const m of mine){if(rng()<0.3){applyRecv(rid,m);del.add(m);}}removeSet(del);}
+  }
+  function deliverAfterSend(){
+    if(mode==="instant"){const all=inflight.slice();for(const m of all)applyRecv(m.to,m);inflight.length=0;return;}
+    if(mode==="target-sender"){const del=new Set();for(const m of inflight)if(m.from!==targetParty){applyRecv(m.to,m);del.add(m);}removeSet(del);return;}
+    if(mode==="target-recv"){const del=new Set();for(const m of inflight)if(m.to!==targetParty){applyRecv(m.to,m);del.add(m);}removeSet(del);return;}
+  }
+  const capPolicy=(mode==="lifo"||mode==="target-sender"||mode==="target-recv")?"newest":(mode==="randcap"||mode==="shuffle")?"random":"oldest";
+  function capQueues(){for(const r of w.parties){let mine=inflight.filter(m=>m.to===r.id);let ex=mine.length-d;if(ex<=0)continue;const del=new Set();
+    if(capPolicy==="oldest"){mine.sort((a,b)=>a.gseq-b.gseq);for(let i=0;i<ex;i++){applyRecv(r.id,mine[i]);del.add(mine[i]);}}
+    else if(capPolicy==="newest"){mine.sort((a,b)=>b.gseq-a.gseq);for(let i=0;i<ex;i++){applyRecv(r.id,mine[i]);del.add(mine[i]);}}
+    else{while(ex>0){const cand=mine.filter(m=>!del.has(m));const m=cand[Math.floor(rng()*cand.length)];applyRecv(r.id,m);del.add(m);ex--;}}
+    removeSet(del);}}
+  let burstParty=null,burstLeft=0,pairTurn=0;
+  function pickNext(steps){
+    const live=w.parties.filter(p=>!p.halted&&!silent.has(p.id));if(!live.length)return null;
+    const uni=()=>live[Math.floor(rng()*live.length)];
+    switch(sched){
+      case "random":return uni();
+      case "rr":return live[steps%live.length];
+      case "flood":return live[0];
+      case "flood-rev":return live[live.length-1];
+      case "skew":{const f=live.find(p=>p.id===fav);return(f&&rng()<0.7)?f:uni();}
+      case "arena-skew":{const inA=live.filter(p=>Math.floor(p.id/2)===favArena),out=live.filter(p=>Math.floor(p.id/2)!==favArena);
+        if(inA.length&&(rng()<0.8||!out.length))return inA[Math.floor(rng()*inA.length)];return out.length?out[Math.floor(rng()*out.length)]:uni();}
+      case "burst":{if(burstParty&&!burstParty.halted&&burstLeft>0){burstLeft--;return burstParty;}burstParty=uni();burstLeft=Math.floor(rng()*3*d);return burstParty;}
+      case "silent1":case "silent2":return uni();
+      case "pair-alt":{const pairs=firstPair===0?[[0,1],[2,3]]:[[2,3],[0,1]];
+        for(const pr of pairs){const lp=pr.map(P).filter(p=>!p.halted&&!silent.has(p.id));if(lp.length){pairTurn++;return lp[pairTurn%lp.length];}}return uni();}
+      case "greedy-gap":{let best=[],bestGap=Infinity;
+        for(const p of live){let gap=p.dir>0?(n-p.pos):(p.pos-1);for(const q of w.parties){if(q===p)continue;const s=(q.pos-p.pos)*p.dir;if(s>0&&s<gap)gap=s;}
+          if(gap<bestGap){bestGap=gap;best=[p];}else if(gap===bestGap)best.push(p);}
+        return best[Math.floor(rng()*best.length)];}
+      case "stale-max":{const cnt={};for(const p of live)cnt[p.id]=0;for(const m of inflight)if(cnt[m.from]!==undefined)cnt[m.from]++;
+        let mx=-1,best=[];for(const p of live){if(cnt[p.id]>mx){mx=cnt[p.id];best=[p];}else if(cnt[p.id]===mx)best.push(p);}
+        return best[Math.floor(rng()*best.length)];}
+      default:return uni();
+    }
+  }
+  const roles={target:(mode==="target-sender"||mode==="target-recv")?targetParty:null,silent:[...silent]};
+
+  const events=[];
+  function snapshot(){
+    const positions={};for(const p of w.parties)positions[p.id]={pos:p.pos,dir:p.dir,halted:p.halted};
+    const vv={};for(const o of w.parties){vv[o.id]={};for(const [k,ov] of views.get(o.id).others)vv[o.id][k]={pos:ov.pos,dir:ov.dir,buf:ov.buf.slice(),fwd:(ov.fwd||ov.buf).slice(),held:ov.buf.filter(x=>!(ov.fwd||ov.buf).includes(x)),assumed:(ov.assumed||[]).slice(-4)};}
+    const stale={};for(const o of w.parties){stale[o.id]={};for(const k of w.parties)if(k.id!==o.id)stale[o.id][k.id]=sent[k.id].length-heard[o.id][k.id];}
+    const usedArr=[...w.used];   // [[pad,owner],...]
+    const claim={};for(const o of w.parties)claim[o.id]=[...(views.get(o.id).selfClaim||[])];
+    return {positions,views:vv,stale,used:w.used.size,usedArr,claim};
+  }
+  let steps=0,reuse=null;
+  events.push({step:0,type:"INIT",actor:-1,note:"initial",snap:snapshot()});
+  while(steps<maxSteps){
+    const me=pickNext(steps);if(!me)break;
+    const prev=me.pos,pdir=me.dir;
+    deliverBefore(me.id);
+    const v=views.get(me.id);v.self.pos=me.pos;v.self.dir=me.dir;
+    const nx=nextSlot(me.pos,me.dir,v,n,d,w.nodes);steps++;
+    if(!nx){me.halted=true;for(const p of w.parties)p.halted=true;events.push({step:steps,type:"HALT",actor:me.id,from:prev,to:prev,note:`no legal jumpspot -> protocol HALTED (Rule 12), ${n-w.used.size} pads wasted`,snap:snapshot()});break;}
+    if(w.used.has(nx.pad)){reuse={pad:nx.pad,first:w.used.get(nx.pad),second:me.id,step:steps,wasted:n-w.used.size};
+      events.push({step:steps,type:"REUSE",actor:me.id,from:prev,to:nx.pad,jumped:nx.jumped,node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,
+        note:`would reuse pad ${nx.pad} (used by P${w.used.get(nx.pad)}) -> protocol HALTED, ${n-w.used.size} pads wasted`,snap:snapshot()});break;}
+    me.pos=nx.pad;if(nx.jumped)me.dir=nx.face;me.sent++;v.self.pos=me.pos;v.self.dir=me.dir;refreshAll(v,n,d,w.nodes);
+    w.used.set(nx.pad,me.id);g++;v.used.add(nx.pad);sent[me.id].push(nx.pad);
+    for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g,sseq:me.sent});
+    deliverAfterSend();
+    capQueues();
+    events.push({step:steps,type:nx.jumped?"JUMP":"WALK",actor:me.id,from:prev,to:nx.pad,
+      node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,note:nx.jumped?`node (${(pdir>0?nx.pad-1:nx.pad)},${(pdir>0?nx.pad-1:nx.pad)+1})`:"",snap:snapshot()});
+  }
+  // verify invariant
+  let invViol=null;
+  for(const e of events){const s=e.snap;for(const oid in s.stale)for(const kid in s.stale[oid])if(s.stale[oid][kid]>d){invViol={oid,kid,val:s.stale[oid][kid],step:e.step};break;}}
+  return {n,d,seed,mode,pick,events,reuse,invViol,usedTotal:w.used.size,eff:w.used.size/n,roles};
+}
+
+// ======================= UI =======================
+let RUN=null, SEL=0;
+const $=id=>document.getElementById(id);
+function classP(id){return "p"+id;}
+
+function run(){
+  const n=+$("inN").value,d=+$("inD").value,seed=+$("inSeed").value,mode=$("inMode").value,pick=$("inPick").value,max=+$("inMax").value;
+  RUN=simulate(n,d,seed,mode,pick,max);
+  SEL=RUN.events.length-1;
+  RUN.reusePad = RUN.reuse ? RUN.reuse.pad : null;
+  // status
+  const sb=$("statusBox");
+  const rolesTxt=(RUN.roles&&RUN.roles.target!=null?` · delayed party: P${RUN.roles.target}`:"")+(RUN.roles&&RUN.roles.silent.length?` · silent: ${RUN.roles.silent.map(p=>"P"+p).join(", ")}`:"");
+  const effTxt=`efficiency <strong>${(RUN.eff*100).toFixed(2)}%</strong> (${RUN.usedTotal}/${n} pads used, ${n-RUN.usedTotal} wasted)`;
+  if(RUN.reuse){sb.className="status reuse";
+    sb.innerHTML=`<strong>HALTED at would-be reuse</strong> (step ${RUN.reuse.step}): <span class="${classP(RUN.reuse.second)}">P${RUN.reuse.second}</span> was about to use pad <code>${RUN.reuse.pad}</code>, already used by <span class="${classP(RUN.reuse.first)}">P${RUN.reuse.first}</span>. Protocol stopped; all unused pads wasted → ${effTxt}${rolesTxt}. `
+      +(RUN.invViol?`<span style="color:#ffd479">⚠ invariant violated (P${RUN.invViol.oid} was ${RUN.invViol.val}&gt;d behind P${RUN.invViol.kid})</span>`:`Delivery invariant ≤ d held throughout.`);
+  } else {sb.className="status clean";
+    sb.innerHTML=`No reuse. ${effTxt}${rolesTxt}. ${RUN.events.length} events. Invariant ≤ d: ${RUN.invViol?'VIOLATED':'held'}.`;}
+  // scrub
+  const sc=$("scrub");sc.max=RUN.events.length-1;sc.value=SEL;
+  renderLog();renderStep();
+}
+
+function passFilter(e){
+  const fp=[...document.querySelectorAll('.fp:checked')].map(c=>c.value);
+  const ft=[...document.querySelectorAll('.ft:checked')].map(c=>c.value);
+  if(e.type==="INIT")return true;
+  if(e.actor>=0 && !fp.includes(String(e.actor)))return false;
+  if(!ft.includes(e.type))return false;
+  return true;
+}
+function renderLog(){
+  const body=$("logBody");body.innerHTML="";
+  RUN.events.forEach((e,i)=>{
+    if(!passFilter(e))return;
+    const tr=document.createElement("tr");
+    tr.className=(i===SEL?"sel ":"")+(e.type==="REUSE"?"evReuse ":"")+(e.type==="JUMP"?"evJump ":"");
+    const ft=e.from!==undefined?`${e.from}${e.actor>=0&&RUN.events[i].snap.positions[e.actor]?'':''}→${e.to}`:"";
+    tr.innerHTML=`<td>${e.step}</td>`
+      +`<td class="${e.actor>=0?classP(e.actor):'mut'}">${e.actor>=0?'P'+e.actor:'—'}</td>`
+      +`<td>${e.type}</td>`
+      +`<td>${e.from!==undefined?e.from+'→'+e.to:''}</td>`
+      +`<td>${e.node!=null?'('+e.node+','+(e.node+1)+')':''}</td>`
+      +`<td class="mut">${e.note||''}</td>`;
+    tr.onclick=()=>{SEL=i;$("scrub").value=i;renderLog();renderStep();};
+    body.appendChild(tr);
+  });
+}
+
+function dirArrow(dir){return dir>0?'→':'←';}
+function renderViews(snap){
+  const box=$("views");box.innerHTML="";
+  for(const oid of [0,1,2,3]){
+    const v=snap.views[oid];const me=snap.positions[oid];
+    const div=document.createElement("div");div.className="view";
+    let html=`<h3 class="${classP(oid)}"><span class="dot b${oid}"></span>P${oid} @ ${me.pos}${dirArrow(me.dir)}${me.halted?' <span class="mut">(halted)</span>':''}${snap.claim&&snap.claim[oid]&&snap.claim[oid].length?` <span class="buf" title="own predicted jump landing, shared with the other parties' predictions (Rule 10)">own landing claim[${snap.claim[oid].join(', ')}]</span>`:''}</h3>`;
+    for(const k of [0,1,2,3]){ if(k==oid)continue; const o=v[k]; const st=snap.stale[oid][k];
+      html+=`<div class="row"><span class="${classP(k)}">P${k}</span>: believes @${o.pos}${dirArrow(o.dir)} `
+        +`<span class="buf">reserved[${(o.fwd||o.buf).join(', ')}]</span> `
+        +(o.held&&o.held.length?`<span class="buf" title="predicted pads still held until the party's messages up to them arrive (Rule 9)">held[${o.held.join(', ')}]</span> `:'')
+        +(o.assumed&&o.assumed.length?`<span class="buf" title="pads assumed occupied because a newer message skipped them (Rule 8b)">assumed used[${o.assumed.join(', ')}]</span> `:'')
+        +`<span class="mut">· ${st} behind</span></div>`;
+    }
+    div.innerHTML=html;box.appendChild(div);
+  }
+}
+
+function renderStrip(snap){
+  const c=$("stripCanvas"),ctx=c.getContext("2d");const n=RUN.n;
+  const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
+  const x=p=>Math.round((p-1)/(n-1)*(W-8))+4;
+  const cols=["#2563eb","#16a34a","#ea580c","#9333ea"];
+  // consumed pads (history), colored faintly by owner
+  if(snap.usedArr){for(const [pad,owner] of snap.usedArr){const c=(owner==='used'||typeof owner!=='number')?"#888":cols[owner];
+    ctx.fillStyle=c+"44";ctx.fillRect(x(pad),H/2+8,Math.max(1,(W-8)/(n-1)),8);}}
+  // baseline
+  ctx.strokeStyle="#2d333b";ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();
+  // reserved buffers (thin ticks) per owner, faint, above the line
+  for(const oid of [0,1,2,3]){const v=snap.views[oid];for(const k in v){const o=v[k];ctx.fillStyle=cols[k]+"55";
+    for(const b of o.buf){ctx.fillRect(x(b)-1,H/2-8,2,16);}}}
+  // reuse marker: bright red X at the reused pad
+  if(RUN.reusePad!=null){const px=x(RUN.reusePad);ctx.strokeStyle="#ef4444";ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(px-6,H/2-12);ctx.lineTo(px+6,H/2+12);ctx.moveTo(px+6,H/2-12);ctx.lineTo(px-6,H/2+12);ctx.stroke();ctx.lineWidth=1;
+    ctx.fillStyle="#ef4444";ctx.font="9px monospace";ctx.fillText("reuse "+RUN.reusePad,px-16,H/2-16);}
+  // true positions (solid)
+  for(const id of [0,1,2,3]){const p=snap.positions[id];ctx.fillStyle=cols[id];
+    const px=x(p.pos);ctx.beginPath();ctx.arc(px,H/2,6,0,7);ctx.fill();
+    ctx.fillStyle="#fff";ctx.font="9px monospace";ctx.fillText("P"+id,px-6,H/2-10);
+    ctx.fillStyle=cols[id];ctx.font="9px monospace";ctx.fillText(p.pos+(p.dir>0?"→":"←"),px-10,H/2+18);}
+}
+
+function renderStep(){
+  const e=RUN.events[SEL];const snap=e.snap;
+  $("scrubLbl").textContent=`${SEL} / ${RUN.events.length-1}  (step ${e.step}${e.actor>=0?', P'+e.actor+' '+e.type:''})`;
+  renderViews(snap);renderStrip(snap);
+}
+
+$("run").onclick=run;
+// Load a known failing case from the dropdown.
+$("inCase").onchange=e=>{ if(!e.target.value) return; const [n,d,seed,mode,pick]=e.target.value.split(",");
+  $("inN").value=n; $("inD").value=d; $("inSeed").value=seed; $("inMode").value=mode; $("inPick").value=pick; run(); };
+// URL parameters, e.g. otpac_trace.html?n=50&d=2&seed=1002&mode=worst&pick=silent2
+try{ const q=new URLSearchParams(location.search);
+  const map={n:"inN",d:"inD",seed:"inSeed",mode:"inMode",pick:"inPick"};
+  for(const k in map) if(q.get(k)!=null) $(map[k]).value=q.get(k); }catch(err){}
+$("scrub").oninput=e=>{SEL=+e.target.value;renderLog();renderStep();};
+document.querySelectorAll('.fp,.ft').forEach(c=>c.onchange=renderLog);
+// autorun with the inputs above (defaults reproduce a reuse at step 189)
+run();
+</script>
+</body>
+</html>
