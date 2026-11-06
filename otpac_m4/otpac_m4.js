@@ -51,6 +51,11 @@
 // 12. Halt-all (Prof. Di Crescenzo, 2026-11-04): when any party cannot send (no valid
 //     jumpspot), the whole protocol halts and all remaining pads count as wasted. This is
 //     enforced by the drivers (test suite, tracer, visualizer), not by this engine.
+// 15. Own reservation (selfRes, default ON, Aman 2026-11-06): every observer also reserves its
+//     OWN next d pads (walking, or its jump landing and the walk after it), computed in its
+//     place in the priority order P0, P1, P2, P3. Lower-priority parties are never predicted
+//     to land on them, so a party about to jump keeps the jumpspot everyone else predicts
+//     for it instead of leaving it to a same-direction party that jumps after it.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -76,7 +81,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -203,6 +208,7 @@ function predStep(view,X,p,dir,blocked,resDir,extra,n,d,nodes){
   if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};
   let L=landingWalls(view,X,blocked,resDir,extra);
   const ahead=selfAheadPads(view,n,d);
+  if(OPT.selfRes && view.selfRes && view.selfRes.length && X>selfIdOf(view)) for(const q of view.selfRes) if(!ahead.includes(q)) ahead.push(q);   // Rule 15
   if(ahead.length){ const b=new Set(L.blocked), r=new Map(L.resDir); for(const q of ahead){ b.add(q); r.delete(q); } L={blocked:b,resDir:r}; }
   const t=jumpTarget(dir,L.blocked,n,d,nodes,L.resDir,passMap(view));
   return t==null?null:{pad:t,jumped:true,face:dir};
@@ -223,13 +229,24 @@ function computeSelfClaim(view,n,d,nodes){
   view.selfClaim=new Set(firstJump<0?[]:fwd.slice(firstJump));
 }
 
+// Rule 15: the observer's own next d pads from its current view (walk, or jump + walk after it)
+function computeSelfRes(view,n,d,nodes){
+  view.selfRes=null; if(!OPT.selfRes||!view.self||view.self.pos==null) return;
+  let p=view.self.pos, dir=view.self.dir; const out=[];
+  for(let s=0;s<d;s++){
+    const {blocked,resDir}=occupancy(view); for(const e of out) blocked.add(e);
+    const st=stepOf(p,dir,blocked,n,d,nodes,resDir,passMap(view));
+    if(!st) break; out.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+  }
+  view.selfRes=out;
+}
 // recompute every party in priority order (P0 first), the observer's own claim in its place
 function refreshAll(view,n,d,nodes){
   const sid=selfIdOf(view), N=view.others.size+1;
   if(OPT.twoTimelines){                    // Rule 14: every party's walk timeline, once per pass
     view._W=new Map(); for(const [id,o] of view.others) if(typeof id==="number") view._W.set(id,pathFor(view,id,n,d,nodes,-o.dir,null));
   }
-  for(let id=0;id<N;id++){ if(id===sid) computeSelfClaim(view,n,d,nodes); else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
+  for(let id=0;id<N;id++){ if(id===sid){ computeSelfClaim(view,n,d,nodes); computeSelfRes(view,n,d,nodes); } else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
   view._W=null;
 }
 
