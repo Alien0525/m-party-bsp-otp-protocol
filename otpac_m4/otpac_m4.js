@@ -56,6 +56,12 @@
 //     place in the priority order P0, P1, P2, P3. Lower-priority parties are never predicted
 //     to land on them, so a party about to jump keeps the jumpspot everyone else predicts
 //     for it instead of leaving it to a same-direction party that jumps after it.
+//     Like the reservations others make for it (Rule 14), it covers both timelines (walk W and,
+//     when an opposite-direction party's walk blocks it, jump J), and earlier own reservations
+//     stay held until the observer has sent the message they were predicted for.
+//     Tested and OFF (2026-11-06): selfJumpNow (the observer always also reserves its own
+//     jumpspot in advance, as if it had to jump now) and allJumpNow (every observer does that
+//     for every party); both gave more reuses on the quick test.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -81,7 +87,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, selfJumpNow:false, allJumpNow:false};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -229,15 +235,39 @@ function computeSelfClaim(view,n,d,nodes){
   view.selfClaim=new Set(firstJump<0?[]:fwd.slice(firstJump));
 }
 
-// Rule 15: the observer's own next d pads from its current view (walk, or jump + walk after it)
+// Rule 15: the observer's own next d pads from its current view, in both timelines (as others
+// reserve them for it, Rule 14): its walk W and, if an opposite-direction party's walk timeline
+// blocks it, its jump timeline J. Earlier own reservations stay held until the observer has sent
+// the message they were predicted for (or the pad is used).
 function computeSelfRes(view,n,d,nodes){
-  view.selfRes=null; if(!OPT.selfRes||!view.self||view.self.pos==null) return;
-  let p=view.self.pos, dir=view.self.dir; const out=[];
-  for(let s=0;s<d;s++){
-    const {blocked,resDir}=occupancy(view); for(const e of out) blocked.add(e);
-    const st=stepOf(p,dir,blocked,n,d,nodes,resDir,passMap(view));
-    if(!st) break; out.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+  if(!OPT.selfRes||!view.self||view.self.pos==null){ view.selfRes=null; return; }
+  if(view._selfLastPos!==view.self.pos){ if(view._selfLastPos!==undefined) view._selfSent=(view._selfSent||0)+1; view._selfLastPos=view.self.pos; }
+  const sent=view._selfSent||0;
+  const ownPath=extra=>{ let p=view.self.pos, dir=view.self.dir; const out=[];
+    for(let s=0;s<d;s++){
+      const {blocked,resDir}=occupancy(view); for(const e of out) blocked.add(e);
+      if(extra) for(const q of extra){ if(q!==p){ blocked.add(q); resDir.delete(q); } }
+      const st=stepOf(p,dir,blocked,n,d,nodes,resDir,passMap(view));
+      if(!st) break; out.push(st.pad); p=st.pad; if(st.jumped) dir=st.face;
+    }
+    return out; };
+  const W=ownPath(null), seqs=[W];
+  if(OPT.twoTimelines){
+    const block=new Set(), Wc=view._W;
+    for(const [id,o] of view.others) if(typeof id==="number" && o.dir===-view.self.dir){
+      const wp=(Wc&&Wc.has(id))?Wc.get(id):pathFor(view,id,n,d,nodes,-o.dir,null); for(const q of wp) block.add(q); }
+    if(block.size){ const J=ownPath(block); if(J.join()!==W.join()) seqs.push(J); }
   }
+  // its jumpspot reserved in advance: where it would land if it had to jump now (+ walk after it)
+  if(OPT.selfJumpNow){ const {blocked,resDir}=occupancy(view); const t=jumpTarget(view.self.dir,blocked,n,d,nodes,resDir,passMap(view));
+    if(t!=null){ const K=[t]; let p=t, dir=view.self.dir;
+      for(let s=1;s<d;s++){ const o=occupancy(view); for(const e of K) o.blocked.add(e);
+        const st=stepOf(p,dir,o.blocked,n,d,nodes,o.resDir,passMap(view)); if(!st) break; K.push(st.pad); p=st.pad; if(st.jumped) dir=st.face; }
+      if(!seqs.some(sq=>sq.join()===K.join())) seqs.push(K); } }
+  const held=view.selfHeld||(view.selfHeld=new Map());
+  for(const sq of seqs) for(let i=0;i<sq.length;i++){ const q=sq[i], s=sent+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
+  const out=[]; for(const sq of seqs) for(const q of sq) if(!out.includes(q)) out.push(q);
+  for(const [q,s] of [...held]){ if((view.used&&view.used.has(q))||s<=sent) held.delete(q); else if(!out.includes(q)) out.push(q); }
   view.selfRes=out;
 }
 // recompute every party in priority order (P0 first), the observer's own claim in its place
@@ -356,7 +386,18 @@ function refreshTimelines(observerView,k,n,d,nodes){
   if(observerView.self && observerView.self.dir===-dir) for(const q of ownAhead(observerView,n,d)) block.add(q);
   const J=pathFor(observerView,k,n,d,nodes,undefined,block);           // jump timeline
   const seqs=[J]; if(W.join()!==J.join()) seqs.push(W);
-  const fwd=J.slice(); for(const q of W) if(!fwd.includes(q)) fwd.push(q);
+  if(OPT.allJumpNow){                                                  // K's jumpspot in advance (+ walk after it)
+    const K=[]; let p=ko.pos, dir2=dir;
+    for(let s=0;s<d;s++){
+      const {blocked,resDir}=predBlocked(observerView,k,K);
+      if(s===0){ const lin=p+dir2; if(lin>=1&&lin<=n) blocked.add(lin); }   // force the jump now
+      const st=predStep(observerView,k,p,dir2,blocked,resDir,K,n,d,nodes);
+      if(!st) break; K.push(st.pad); p=st.pad; if(st.jumped) dir2=st.face;
+    }
+    if(K.length && !seqs.some(sq=>sq.join()===K.join())) seqs.push(K);
+  }
+  const fwdAll=[]; for(const sq of seqs) for(const q of sq) if(!fwdAll.includes(q)) fwdAll.push(q);
+  const fwd=fwdAll;
   ko.seqs=seqs; ko.fwd=fwd; ko.landClaim=new Set();
   const buf=fwd.slice();
   if(OPT.sticky){
