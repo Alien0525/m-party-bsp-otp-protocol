@@ -100,7 +100,7 @@
         <option value="256,2,64,randcap,silent1">256 · d2 · seed 64 · randcap · silent1 (step 190)</option>
         <option value="256,2,24,worst,skew">256 · d2 · seed 24 · worst · skew (step 208)</option>
         <option value="256,2,39,adversarial,arena-skew">256 · d2 · seed 39 · adversarial · arena-skew (step 211)</option>
-        <option value="256,2,2,worst,greedy-gap">256 · d2 · seed 2 · worst · greedy-gap (step 232)</option>
+        <option value="256,2,63,worst,greedy-gap">256 · d2 · seed 63 · worst · greedy-gap (step 218)</option>
       </select>
     </div>
     <button id="run">Run</button>
@@ -227,6 +227,10 @@
 //     the message number it was predicted for turned out to be a walk; X may still make that
 //     jump on a later message. It is released only by Rule 16 (X's real jump is known) or
 //     when the pad is used.
+// 19. Shared pad -> also reserve the way around it (conflictAlt, default ON, Aman 2026-11-06):
+//     if a pad Y predicts for X is also reserved or held for another party in Y's view, X may
+//     have to step around it (R1), so Y also reserves X's path that respects every buffer,
+//     usually a jump, in addition to X's walk and jump timelines.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -252,7 +256,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, freeHeld:true, holdAfterJump:true, keepJumpHeld:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, freeHeld:true, holdAfterJump:true, keepJumpHeld:true, conflictAlt:true};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -545,7 +549,14 @@ function refreshTimelines(observerView,k,n,d,nodes){
   if(observerView.self && observerView.self.dir===-dir) for(const q of ownAhead(observerView,n,d)) block.add(q);
   const J=pathFor(observerView,k,n,d,nodes,undefined,block);           // jump timeline
   const seqs=[J]; if(W.join()!==J.join()) seqs.push(W);
-  const fwd=J.slice(); for(const q of W) if(!fwd.includes(q)) fwd.push(q);
+  if(OPT.conflictAlt){                                                 // Rule 19
+    const inOther=q=>{ for(const [id,o] of observerView.others) if(id!==k && typeof id==="number" && o.buf && o.buf.includes(q)) return true; return false; };
+    if(W.some(inOther)||J.some(inOther)){
+      const K=pathFor(observerView,k,n,d,nodes,undefined,null);        // X respecting every buffer: steps around the shared pad
+      if(K.length && !seqs.some(sq=>sq.join()===K.join())) seqs.push(K);
+    }
+  }
+  const fwd=[]; for(const sq of seqs) for(const q of sq) if(!fwd.includes(q)) fwd.push(q);
   ko.seqs=seqs; ko.fwd=fwd; ko.landClaim=new Set();
   const buf=fwd.slice();
   if(OPT.sticky){

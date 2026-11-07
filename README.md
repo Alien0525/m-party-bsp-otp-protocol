@@ -6,7 +6,7 @@ The repository has two parts:
 
 | Folder | What it is |
 |---|---|
-| [`otpac_m4/`](otpac_m4/) | **Current work.** Protocol A5 for m = 4 parties: per-party reserved buffers, individual jumps over a static BSP tree, up to d undelivered messages per party (Rules R1–R9 with both-side clearance, R12–R18). Includes the engine, the visualizer, the test suite and the paper. |
+| [`otpac_m4/`](otpac_m4/) | **Current work.** Protocol A5 for m = 4 parties: per-party reserved buffers, individual jumps over a static BSP tree, up to d undelivered messages per party (Rules R1–R9 with both-side clearance, R12–R19). Includes the engine, the visualizer, the test suite and the paper. |
 | [`old_protocol/`](old_protocol/) | The earlier m-party paired-jump BSP protocol, with its visualizer, test suite, experiment and derivation notes. See its own [README](old_protocol/README.md). |
 
 The root `index.html` links to both visualizers (GitHub Pages).
@@ -17,7 +17,7 @@ The root `index.html` links to both visualizers (GitHub Pages).
 |---|---|
 | `index.html`, `app.js`, `style.css` | Interactive visualizer. Same look as the old one, but it runs protocol A5: choose n, d, a delivery adversary and a message sequence, then step through sends and inspect each party's view (believed positions, reserved and held pads). |
 | `otpac_trace.html` | Step-by-step tracer. Replays any test-suite case (n, d, seed, delivery mode, sender order) with every party's view at every step. |
-| `otpac_m4.js` | The protocol engine (Rules R1–R9 with both-side clearance, R12: when one party halts the protocol halts; R13: only legal landing spots are reserved; R14: two timelines for head-on parties; R15: each party reserves its own next pads, in priority order P0–P3; R16: held jump pads are freed once the party's real jump is known; R17: the pad after a held jump spot is held too; R18: held jump pads stay held until the real jump is known; the old Rules 10 and 11 are kept only as options, off by default). It is used by Node and by both pages. |
+| `otpac_m4.js` | The protocol engine (Rules R1–R9 with both-side clearance, R12: when one party halts the protocol halts; R13: only legal landing spots are reserved; R14: two timelines for head-on parties; R15: each party reserves its own next pads, in priority order P0–P3; R16: held jump pads are freed once the party's real jump is known; R17: the pad after a held jump spot is held too; R18: held jump pads stay held until the real jump is known; R19: if a pad predicted for a party is also in another party's buffer, the way around it (usually a jump) is reserved too; the old Rules 10 and 11 are kept only as options, off by default). It is used by Node and by both pages. |
 | `otpac_test_suite.js` | Test suite: 35,964 runs over 9 delivery adversaries × 12 sender orders. Run `node otpac_test_suite.js` (about 75 min on 2 cores). |
 | `analyze_suite.js` | Post-analysis of the suite results. |
 | `make_figs.py`, `make_fig_state.py`, `gen_tables.py` | Regenerate the paper's figures and tables from the suite results. |
