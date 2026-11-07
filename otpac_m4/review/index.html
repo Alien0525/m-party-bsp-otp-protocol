@@ -46,6 +46,8 @@
   .small{font-size:14px;color:var(--ink2)}
   ul{padding-left:22px}
   li{margin:4px 0}
+  ol.rules{list-style:none;padding-left:0;margin:6px 0}
+  ol.rules li{margin:8px 0}
 </style>
 </head>
 <body>
@@ -58,18 +60,40 @@
     <a class="btn" href="visualizer.html">Visualizer</a>
   </div>
 
+  <h2>Setting</h2>
+  <p>Four parties share one pad of n one-time pads. <span class="p0">P0</span> (moving right) and <span class="p1">P1</span> (moving left) start at the two ends of the first half, [1, n/2]; <span class="p2">P2</span> (right) and <span class="p3">P3</span> (left) start at the two ends of the second half, [n/2+1, n]. Each message uses one pad and is broadcast to the other three. Delivery is asynchronous, but no party ever has more than d of its messages undelivered to any other party. Each party keeps a <b>view</b>: where it believes each other party is, and the pads it <b>reserves</b> for each of them (its current prediction of their next d pads) or still <b>holds</b> for them (earlier predictions not yet resolved). Jump spots come from a fixed BSP tree of nodes (M, M+1), visited root first.</p>
+
   <h2>Rules in this snapshot</h2>
-  <ul>
-    <li><b>R1 to R9</b> as in the paper, with the jump check (R3) on <b>both sides</b> of the node: a landing needs more than 2d free pads on each side. Pads another party has reserved or held count as taken, so the check runs from that party's furthest reserved pad, not from its believed position.</li>
-    <li><b>R12</b> (halt-all): if any party cannot send, the protocol halts and all remaining pads count as wasted.</li>
-    <li><b>R13</b> (legal landings only): a party never predicts another party to land on one of its own next d pads. Every prediction is recomputed after each move.</li>
-    <li><b>R14</b> (two timelines): when two parties approach head-on, each observer reserves both possible futures for each of them, walking on or jumping.</li>
-    <li><b>R15</b> (own reservation): each party also reserves its own next d pads, in both timelines, in the fixed priority order <span class="p0">P0</span>, <span class="p1">P1</span>, <span class="p2">P2</span>, <span class="p3">P3</span>. Lower-priority parties are never predicted to land on them.</li>
-    <li><b>R16</b>: pads held for X from earlier jump predictions are freed once the observer knows for sure where X jumped (it has X's messages up to and including the jump, none missing).</li>
-    <li><b>R17</b>: when an observer holds a predicted landing pad for X, it also holds the d &minus; 1 pads after it in X's direction (where X walks right after landing).</li>
-    <li><b>R18</b>: those held jump pads are not released just because X's next message turned out to be a walk; X may still make that jump one message later. They are released only by R16, or when the pad is used.</li>
-    <li><b>R19</b>: if a pad an observer predicts for X is also reserved or held for another party, X may have to step around it, so the observer also reserves that way around (usually a jump).</li>
-  </ul>
+  <h3>Moving</h3>
+  <ol class="rules">
+    <li value="1"><b>R1 Sending.</b> A party uses its next pad in its direction only if that pad is not used and is not reserved or held for anyone in its view. Otherwise it jumps (R2). If there is no valid jump spot, it cannot send (see R12).</li>
+    <li value="2"><b>R2 Jump target.</b> The root-most BSP node (M, M+1) that is not fully occupied and passes R3. A right-mover lands on M+1, a left-mover on M, and the direction stays the same.</li>
+    <li value="3"><b>R3 Jump check.</b> A node is valid only if there are more than 2d free pads on <b>both</b> sides of it, counted outside the node. Pads that are used, believed positions, and pads reserved or held for others all count as taken, so the check runs from the furthest reserved pad of each party, not from its believed position. On the lander's back side, pads reserved only for parties moving away from the node do not count.</li>
+  </ol>
+  <h3>Predicting the others</h3>
+  <ol class="rules">
+    <li value="4"><b>R4 Recompute.</b> Predictions are recomputed whenever anything in the view changes.</li>
+    <li value="5"><b>R5 Disjoint.</b> A pad reserved for one party is not reserved for another; when predicting a party, the pads reserved for the others count as obstacles.</li>
+    <li value="6"><b>R6 Only valid jump spots.</b> A jump spot is predicted only while it passes R3. Once it stops passing, it is no longer predicted (a pad already reserved stays held under R9).</li>
+    <li value="7"><b>R7 Refresh everyone.</b> On every received message, the predictions for all parties are refreshed, not only for the sender.</li>
+    <li value="8"><b>R8 Message order.</b> Messages carry a per-sender number. (a) An older message only marks its pad used and never moves the sender back. (b) A newer message that skips k numbers means the sender used k pads on the way, and those pads are marked as used: the reserved ones if it provably followed them, the straight-line ones if it provably walked, and every pad it could have used if it jumped unexpectedly.</li>
+    <li value="9"><b>R9 Held pads.</b> A predicted pad stays held until all of that party's messages up to the one it was predicted for have arrived (then it is known used or known unused). Held pads are never used (R1).</li>
+    <li value="13"><b>R13 Legal landings only.</b> A party never predicts another party to land on one of its own next d pads, and all predictions are recomputed after its own move.</li>
+    <li value="14"><b>R14 Two timelines.</b> When two parties approach head-on and their predicted pads overlap, the order in which they meet is unknown, so an observer reserves both futures for each of them: walking on, and jumping (with the jump spot reserved).</li>
+    <li value="15"><b>R15 Own reservation.</b> Each party also reserves its own next d pads (walking, or its jump spot and the pad after it), in both timelines, in the fixed priority order <span class="p0">P0</span>, <span class="p1">P1</span>, <span class="p2">P2</span>, <span class="p3">P3</span>. Lower-priority parties are never predicted to land on them.</li>
+  </ol>
+  <h3>Held jump pads</h3>
+  <ol class="rules">
+    <li value="16"><b>R16 Free when the jump is known.</b> Pads held for X from earlier jump predictions are freed once the observer knows for sure where X jumped: it has X's messages up to and including the jump, with none missing.</li>
+    <li value="17"><b>R17 Hold the pad after a jump spot.</b> When an observer holds a predicted landing pad for X, it also holds the d &minus; 1 pads after it in X's direction, where X walks right after landing.</li>
+    <li value="18"><b>R18 Keep until the jump is known.</b> Held jump pads are not released just because X's next message turned out to be a walk, since X may still make that jump one message later. They are released only by R16, or when the pad is used.</li>
+    <li value="19"><b>R19 Shared pad.</b> If a pad an observer predicts for X is also reserved or held for another party, X may have to step around it, so the observer also reserves that way around (usually a jump).</li>
+  </ol>
+  <h3>Stopping</h3>
+  <ol class="rules">
+    <li value="12"><b>R12 Halt-all.</b> If any party cannot send, the whole protocol halts and all remaining pads count as wasted.</li>
+  </ol>
+  <p class="small">R10 (shared slots by priority) and R11 (keep your own next pad) were tried earlier and removed, because they caused reuses.</p>
 
   <h2>How many runs still reuse</h2>
   <p>These numbers come from a quick test, not the full 35,964-run suite, which has not been rerun on these rules yet.</p>
