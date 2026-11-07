@@ -59,6 +59,24 @@
 //     Like the reservations others make for it (Rule 14), it covers both timelines (walk W and,
 //     when an opposite-direction party's walk blocks it, jump J), and earlier own reservations
 //     stay held until the observer has sent the message they were predicted for.
+// 16. Free held jump pads once the jump is known (freeHeld, default ON, Aman 2026-11-06): when
+//     observer Y has received X's messages up to and including one that shows X jumped (its
+//     pad is not the next pad of the one before), Y knows for sure where X landed, so every
+//     pad Y still holds for X from an earlier jump prediction (landing pads and the walk after
+//     them) is freed. Y does not free anything while it might still be missing X's jump.
+// 17. Hold the walk after a held jumpspot (holdAfterJump, default ON, Aman 2026-11-06): when Y
+//     predicts X lands on pad q, Y also holds the d-1 pads after q in X's direction (the pads X
+//     walks to right after landing), each for the following message number. They stay held
+//     until Y knows X did not go there (Rule 16).
+// 18. Keep held jump pads until the jump is known (keepJumpHeld, default ON, Aman 2026-11-06):
+//     a held landing pad (and the pads held after it, Rule 17) is NOT released just because
+//     the message number it was predicted for turned out to be a walk; X may still make that
+//     jump on a later message. It is released only by Rule 16 (X's real jump is known) or
+//     when the pad is used.
+// 19. Shared pad -> also reserve the way around it (conflictAlt, default ON, Aman 2026-11-06):
+//     if a pad Y predicts for X is also reserved or held for another party in Y's view, X may
+//     have to step around it (R1), so Y also reserves X's path that respects every buffer,
+//     usually a jump, in addition to X's walk and jump timelines.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -84,7 +102,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, freeHeld:true, holdAfterJump:true, keepJumpHeld:true, conflictAlt:true};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -377,7 +395,14 @@ function refreshTimelines(observerView,k,n,d,nodes){
   if(observerView.self && observerView.self.dir===-dir) for(const q of ownAhead(observerView,n,d)) block.add(q);
   const J=pathFor(observerView,k,n,d,nodes,undefined,block);           // jump timeline
   const seqs=[J]; if(W.join()!==J.join()) seqs.push(W);
-  const fwd=J.slice(); for(const q of W) if(!fwd.includes(q)) fwd.push(q);
+  if(OPT.conflictAlt){                                                 // Rule 19
+    const inOther=q=>{ for(const [id,o] of observerView.others) if(id!==k && typeof id==="number" && o.buf && o.buf.includes(q)) return true; return false; };
+    if(W.some(inOther)||J.some(inOther)){
+      const K=pathFor(observerView,k,n,d,nodes,undefined,null);        // X respecting every buffer: steps around the shared pad
+      if(K.length && !seqs.some(sq=>sq.join()===K.join())) seqs.push(K);
+    }
+  }
+  const fwd=[]; for(const sq of seqs) for(const q of sq) if(!fwd.includes(q)) fwd.push(q);
   ko.seqs=seqs; ko.fwd=fwd; ko.landClaim=new Set();
   const buf=fwd.slice();
   if(OPT.sticky){
@@ -385,7 +410,22 @@ function refreshTimelines(observerView,k,n,d,nodes){
     const last=ko.lastNum||0;
     for(const sq of seqs) for(let i=0;i<sq.length;i++){ const q=sq[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
     const used=observerView.used;
-    for(const [q] of held){ if(used&&used.has(q)){ held.delete(q); heldLand.delete(q); } else if(!buf.includes(q)) buf.push(q); }
+    const heldJump=ko.heldJump||(ko.heldJump=new Set());                 // held pads from jump predictions (Rule 16)
+    for(const sq of seqs){ let prev=ko.pos, jumped=false; for(const q of sq){ if(q!==prev+dir) jumped=true; if(jumped) heldJump.add(q); prev=q; } }
+    if(OPT.holdAfterJump) for(const sq of seqs){                         // Rule 17
+      let prev=ko.pos;
+      for(let i=0;i<sq.length;i++){
+        const q=sq[i];
+        if(q!==prev+dir) for(let j=1;j<d;j++){                           // q is a landing
+          const r=q+j*dir, s=last+1+i+j;
+          if(r<1||r>n||(used&&used.has(r))) break;
+          if(!(held.get(r)>=s)) held.set(r,s); heldJump.add(r);
+        }
+        prev=q;
+      }
+    }
+    for(const [q] of held){ if(used&&used.has(q)){ held.delete(q); heldLand.delete(q); heldJump.delete(q); } else if(!buf.includes(q)) buf.push(q); }
+    for(const q of [...heldJump]) if(!held.has(q)) heldJump.delete(q);
   }
   ko.buf=buf;
 }
@@ -450,6 +490,7 @@ function refreshBuffer(observerView,k,n,d,nodes){
 function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
   const o=observerView.others.get(fromId);
   if(!o) return;
+  if(o.startPos===undefined) o.startPos=o.pos;                      // Rule 16: X's position before its message 1
   if(observerView.used) observerView.used.add(pad);
   const last=o.lastNum||0;
   const recv=o.recv||(o.recv=new Set());
@@ -471,7 +512,17 @@ function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
     // pad predicted for a message # <= prefix is resolved (known used, or proven unused).
     recv.add(num);
     o.prefix=o.prefix||0; while(recv.has(o.prefix+1)) o.prefix++;
-    if(o.held) for(const [q,s] of o.held) if(s<=o.prefix){ o.held.delete(q); if(o.heldLand) o.heldLand.delete(q); }
+    if(o.held) for(const [q,s] of o.held) if(s<=o.prefix && !(OPT.keepJumpHeld && o.heldJump && o.heldJump.has(q))){ o.held.delete(q); if(o.heldLand) o.heldLand.delete(q); }
+    if(OPT.freeHeld){                                                     // Rule 16
+      const pads=o.pads||(o.pads=new Map()); pads.set(num,{pad,dir});
+      let jumpKnown=false; o.conf=o.conf||0;
+      while(o.conf<o.prefix){
+        const c=o.conf+1, cur=pads.get(c), prv=c===1?{pad:o.startPos}:pads.get(c-1);
+        if(cur && prv && prv.pad!=null && cur.dir!==undefined && cur.pad!==prv.pad+cur.dir) jumpKnown=true;
+        o.conf=c;
+      }
+      if(jumpKnown && o.held && o.heldJump) for(const q of [...o.heldJump]){ o.held.delete(q); o.heldJump.delete(q); }
+    }
   }
   // else: older message -> pad is marked used above; position stays where it is
   refreshAll(observerView,n,d,nodes);   // every party, in priority order (Rule 10)

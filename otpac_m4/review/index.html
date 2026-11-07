@@ -51,7 +51,7 @@
 <body>
 <main>
   <h1>Protocol A5 (m = 4): remaining reuse cases</h1>
-  <p class="sub">Snapshot of the code on 6 November 2026. The tracer and visualizer linked here are frozen copies of that code, so every case below reproduces exactly.</p>
+  <p class="sub">Snapshot of the code on 7 November 2026 (rules R1 to R19). The tracer and visualizer linked here are frozen copies of that code, so every case below reproduces exactly.</p>
 
   <div class="nav">
     <a class="btn" href="otpac_trace.html">Step-by-step tracer</a>
@@ -62,9 +62,13 @@
   <ul>
     <li><b>R1 to R9</b> as in the paper, with the jump check (R3) on <b>both sides</b> of the node: a landing needs more than 2d free pads on each side. Pads another party has reserved or held count as taken, so the check runs from that party's furthest reserved pad, not from its believed position.</li>
     <li><b>R12</b> (halt-all): if any party cannot send, the protocol halts and all remaining pads count as wasted.</li>
-    <li><b>R13</b> (legal landings only): a party never predicts another party to land on one of its own next d pads. Every prediction is recomputed after each move. Earlier predictions stay in the held list and are never used (R1).</li>
+    <li><b>R13</b> (legal landings only): a party never predicts another party to land on one of its own next d pads. Every prediction is recomputed after each move.</li>
     <li><b>R14</b> (two timelines): when two parties approach head-on, each observer reserves both possible futures for each of them, walking on or jumping.</li>
     <li><b>R15</b> (own reservation): each party also reserves its own next d pads, in both timelines, in the fixed priority order <span class="p0">P0</span>, <span class="p1">P1</span>, <span class="p2">P2</span>, <span class="p3">P3</span>. Lower-priority parties are never predicted to land on them.</li>
+    <li><b>R16</b>: pads held for X from earlier jump predictions are freed once the observer knows for sure where X jumped (it has X's messages up to and including the jump, none missing).</li>
+    <li><b>R17</b>: when an observer holds a predicted landing pad for X, it also holds the d &minus; 1 pads after it in X's direction (where X walks right after landing).</li>
+    <li><b>R18</b>: those held jump pads are not released just because X's next message turned out to be a walk; X may still make that jump one message later. They are released only by R16, or when the pad is used.</li>
+    <li><b>R19</b>: if a pad an observer predicts for X is also reserved or held for another party, X may have to step around it, so the observer also reserves that way around (usually a jump).</li>
   </ul>
 
   <h2>How many runs still reuse</h2>
@@ -73,77 +77,91 @@
   <table>
     <thead><tr><th>Test set</th><th class="num">Runs</th><th class="num">Reuse</th><th class="num">Mean efficiency</th></tr></thead>
     <tbody>
-      <tr><td>Runs that had a reuse under one of the earlier rule sets</td><td class="num">219</td><td class="num">27</td><td class="num">0.850</td></tr>
-      <tr><td>Random sample of runs that were clean under the old rules</td><td class="num">2,000</td><td class="num">5</td><td class="num">0.708</td></tr>
+      <tr><td>Runs that had a reuse under one of the earlier rule sets</td><td class="num">219</td><td class="num">23</td><td class="num">0.850</td></tr>
+      <tr><td>Random sample of runs that were clean under the old rules</td><td class="num">2,000</td><td class="num">3</td><td class="num">0.707</td></tr>
     </tbody>
   </table>
   </div>
-  <p>That is 31 distinct runs with a reuse (one run is in both sets). In all of them, the delivery bound held throughout: no party ever had more than d undelivered messages. No party ever wrote a pad that was reserved in its own view.</p>
+  <p>That is 25 distinct runs with a reuse (one run is in both sets). In all of them, the delivery bound held throughout (no party ever had more than d undelivered messages), and no party ever wrote a pad that was reserved in its own view.</p>
   <p class="small">Efficiency is lower than under the old rules mainly because of R12: at small n, one halt wastes a large share of the pad.</p>
 
-  <h2>What the 31 cases have in common</h2>
-  <div class="key">In every case, two parties disagree about <b>whether and where one of them jumps</b>. While the jump message is still in flight (it is one of the d messages allowed to be undelivered), the other party moves onto the same pad.</div>
-  <p>They disagree because each party's view of the others is a little out of date, and reservations made earlier stay held. So two views can block different pads, and two parties can compute different jump spots for the same party, or one expects a walk where the other jumps.</p>
-  <p>All 31 happen late in the run (around step 180 or later for n = 256), when free space is broken into small pieces and many parties need to jump. They split into three patterns:</p>
+  <h3>How the count moved as rules were added</h3>
   <div class="tablewrap">
   <table>
-    <thead><tr><th>Pattern</th><th class="num">Runs</th></tr></thead>
+    <thead><tr><th>Rules</th><th class="num">Still reuse (of 219)</th><th class="num">Reuse in sample (of 2,000)</th></tr></thead>
     <tbody>
-      <tr><td>A. Two parties moving the same direction jump to the same spot</td><td class="num">16</td></tr>
-      <tr><td>B. A party walks into the spot where a same-direction party just landed</td><td class="num">13</td></tr>
-      <tr><td>C. Two parties moving toward each other, one of them just after a jump</td><td class="num">2</td></tr>
+      <tr><td>R1 to R9, R12 to R15 (6 Nov snapshot)</td><td class="num">27</td><td class="num">5</td></tr>
+      <tr><td>+ R16, R17</td><td class="num">22</td><td class="num">4</td></tr>
+      <tr><td>+ R18</td><td class="num">22</td><td class="num">3</td></tr>
+      <tr><td>+ R19</td><td class="num">23</td><td class="num">3</td></tr>
     </tbody>
   </table>
   </div>
 
-  <h2>A. Both jump to the same spot</h2>
+  <h2>What the 25 cases have in common</h2>
+  <div class="key">In every case the two parties move in the <b>same direction</b>, and the pad that gets reused is the <b>landing pad of the first party's jump</b>. The second party had the wrong idea about that jump: whether it would happen, or where it would land.</div>
+  <p>They disagree because each party's view of the others is a little out of date (up to d messages), and reservations made earlier stay held. All 25 happen late in the run, when free space is broken into small pieces and many parties need to jump. They split into three groups:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Group</th><th class="num">Runs</th></tr></thead>
+    <tbody>
+      <tr><td>1. Both jump to the same spot, each leaving the best spot to the other</td><td class="num">12</td></tr>
+      <tr><td>2. A party lands where the other is heading, because the other's picture of it is out of date</td><td class="num">8</td></tr>
+      <tr><td>3. A jump the other party did not expect at all</td><td class="num">4</td></tr>
+      <tr><td>Other</td><td class="num">1</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>1. Each leaves the best spot to the other</h2>
   <div class="case">
     <div class="lbl">Example</div>
-    n = 256, d = 2, seed 26, delivery adversarial, sender order silent1. <span class="p1">P1</span> reuses pad 16 at step 189.
-    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=26&amp;mode=adversarial&amp;pick=silent1">Open in the tracer</a>
+    n = 256, d = 2, seed 39, delivery adversarial, sender order arena-skew. <span class="p2">P2</span> reuses pad 169 at step 211.
+    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=39&amp;mode=adversarial&amp;pick=arena-skew">Open in the tracer</a>
   </div>
-  <p><span class="p1">P1</span> and <span class="p3">P3</span> both move left. <span class="p0">P0</span> never sends and stays at pad 1.</p>
+  <p><span class="p0">P0</span> and <span class="p2">P2</span> both move right, and both are about to jump.</p>
   <ol class="steps">
-    <li>Around step 182, <span class="p1">P1</span> is still walking (at 73). It predicts that <span class="p3">P3</span> will soon have to jump, to 32, and reserves 32 for <span class="p3">P3</span>. That pad then stays in <span class="p1">P1</span>'s held list.</li>
-    <li>At step 187 <span class="p1">P1</span> is at 72. <span class="p2">P2</span> is walking toward it, so <span class="p1">P1</span> must jump. In its own view, 32 is still held for <span class="p3">P3</span>, so <span class="p1">P1</span> picks the next spot, 16.</li>
-    <li><span class="p3">P3</span> has learned that <span class="p1">P1</span> must jump. <span class="p1">P1</span> has priority, so <span class="p3">P3</span> gives 32 to <span class="p1">P1</span> and takes 16 itself. At step 188 <span class="p3">P3</span> jumps to 16.</li>
-    <li>At step 189 <span class="p1">P1</span> jumps to 16 as well.</li>
+    <li>In <span class="p0">P0</span>'s view, <span class="p2">P2</span> will jump to 177, so <span class="p0">P0</span> reserves 177 for <span class="p2">P2</span>.</li>
+    <li>In <span class="p2">P2</span>'s view, <span class="p0">P0</span> will jump to 177, so <span class="p2">P2</span> reserves 177 for <span class="p0">P0</span>.</li>
+    <li>At step 210 <span class="p0">P0</span> jumps. 177 is reserved for <span class="p2">P2</span>, so it takes the next spot, 169.</li>
+    <li>At step 211 <span class="p2">P2</span> jumps. 177 is reserved for <span class="p0">P0</span>, so it also takes 169.</li>
   </ol>
-  <p>Each party gives 32 to the other: <span class="p3">P3</span> because of priority, <span class="p1">P1</span> because of the earlier reservation it keeps. Both land on the second choice.</p>
+  <p>Each party keeps the best spot free for the other, and both land on the second choice. Seed 26 (adversarial, silent1) is the same pattern, where one side keeps the spot free because of priority and the other because of an earlier held reservation.</p>
 
-  <h2>B. Walking into a fresh landing</h2>
+  <h2>2. Out-of-date picture of the lander</h2>
   <div class="case">
     <div class="lbl">Example</div>
-    n = 256, d = 2, seed 47, delivery worst, sender order greedy-gap. <span class="p1">P1</span> reuses pad 40 at step 228.
-    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=47&amp;mode=worst&amp;pick=greedy-gap">Open in the tracer</a>
+    n = 256, d = 2, seed 63, delivery worst, sender order greedy-gap. <span class="p0">P0</span> reuses pad 169 at step 218.
+    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=63&amp;mode=worst&amp;pick=greedy-gap">Open in the tracer</a>
   </div>
   <ol class="steps">
-    <li><span class="p3">P3</span> walks left down to 51. In <span class="p3">P3</span>'s view, pads 49 and 50 are held for <span class="p0">P0</span> (an earlier prediction of <span class="p0">P0</span>'s jump). So <span class="p3">P3</span> cannot walk on, and at step 220 it jumps to 40.</li>
-    <li><span class="p1">P1</span> is at 48, behind that spot and also moving left. <span class="p1">P1</span> does not hold 49 and 50 for <span class="p0">P0</span>, so it expects <span class="p3">P3</span> simply to walk on to 51 and 50.</li>
-    <li>When <span class="p3">P3</span> jumped, the node passed the both-sides check: <span class="p1">P1</span>'s believed position and reservations were more than 2d away.</li>
-    <li><span class="p3">P3</span> then does not send again, and its last two messages (51 and the jump to 40) do not reach <span class="p1">P1</span>, which the bound allows. <span class="p1">P1</span> keeps walking, from 48 down to 41, still believing <span class="p3">P3</span> is at 52. At step 228 it steps onto 40.</li>
+    <li><span class="p0">P0</span> has already jumped from 234 to 161, but that message has not reached <span class="p2">P2</span>. <span class="p2">P2</span> still believes <span class="p0">P0</span> is at 234, about to jump to 177, and keeps 177 free for it.</li>
+    <li><span class="p2">P2</span> needs to jump, so at step 210 it takes the next spot, 169.</li>
+    <li><span class="p0">P0</span> knows it is at 161 and not going to 177, so it predicts <span class="p2">P2</span> will jump to 177 and reserves 177 for it (R19 makes sure that jump is reserved at all).</li>
+    <li><span class="p0">P0</span> walks from 161 up to 168, and at step 218 steps onto 169.</li>
   </ol>
-  <p>The 2d clearance protects the landing at the moment of the jump. It does not stop a walker that does not know about the jump from walking up to it later, if the lander stays silent.</p>
+  <p>The extra reservation is placed on the spot <span class="p0">P0</span> thinks <span class="p2">P2</span> will choose, but <span class="p2">P2</span> chooses from an out-of-date picture of <span class="p0">P0</span>.</p>
 
-  <h2>C. Head-on, right after a jump</h2>
+  <h2>3. A jump the other did not expect</h2>
   <div class="case">
     <div class="lbl">Example</div>
-    n = 256, d = 2, seed 98, delivery adversarial, sender order skew. <span class="p1">P1</span> reuses pad 162 at step 180.
-    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=98&amp;mode=adversarial&amp;pick=skew">Open in the tracer</a>
+    n = 256, d = 2, seed 28, delivery randcap, sender order arena-skew. <span class="p1">P1</span> reuses pad 200 at step 221.
+    <br><a href="otpac_trace.html?n=256&amp;d=2&amp;seed=28&amp;mode=randcap&amp;pick=arena-skew">Open in the tracer</a>
   </div>
   <ol class="steps">
-    <li><span class="p1">P1</span> moves left through the area around 160 to 170. While <span class="p0">P0</span> is at 16, <span class="p1">P1</span> predicts <span class="p0">P0</span> will walk to 17 and then jump to 161, so it reserves 161 for <span class="p0">P0</span>.</li>
-    <li>At step 172 <span class="p0">P0</span> jumps from 17 to 161. In <span class="p0">P0</span>'s view, <span class="p1">P1</span> is still far enough away for the node to pass the check.</li>
-    <li>That message has not reached <span class="p1">P1</span>. At step 173 <span class="p1">P1</span> is at 168, close enough that node (160,161) no longer passes the check in its view, so it now predicts <span class="p0">P0</span> will jump to 225. Pad 161 stays held for <span class="p0">P0</span>, but pad 162, where <span class="p0">P0</span> walks right after landing on 161, was never reserved.</li>
-    <li>At step 178 <span class="p0">P0</span> walks to 162. Neither of its last two messages has reached <span class="p1">P1</span>, which still believes <span class="p0">P0</span> is at 17. At step 180 <span class="p1">P1</span> walks from 163 onto 162.</li>
+    <li><span class="p3">P3</span> moves left and is at 238. In <span class="p3">P3</span>'s view, its next pad 237 is held for <span class="p0">P0</span> (an earlier prediction of <span class="p0">P0</span>'s jump). It cannot step on it, so at step 217 it jumps to 200.</li>
+    <li><span class="p1">P1</span> never made that prediction for <span class="p0">P0</span>, so it does not hold 237 and expects <span class="p3">P3</span> simply to walk to 237 and 236. It reserves nothing at 200.</li>
+    <li>When <span class="p1">P1</span> itself has to jump, 200 looks free, and at step 221 it lands there.</li>
   </ol>
+  <p>The two parties remember different old predictions about a third party, so they disagree about whether <span class="p3">P3</span> can walk on.</p>
 
-  <h2>Open question</h2>
-  <p>In all three patterns, a held reservation covers the jump spot one party predicted earlier, but not the spot the jumper actually picks from its own view. Two directions we have looked at:</p>
+  <h2>What we tried that did not help</h2>
   <ul>
-    <li>Make every party compute the same jump spot (for example, strict priority applied to held reservations too). This would fix pattern A, but it means sometimes freeing a held reservation.</li>
-    <li>Have every party reserve every party's jump spot in advance, even when it is not about to jump. We tested this: it fixed some cases but caused more reuses overall (23 in the 2,000-run sample) and lower efficiency, so it is not in this snapshot.</li>
+    <li><b>Reserving every party's jump spot in advance</b>, even when it is not about to jump: fixed some cases but gave more reuses overall (23 in the 2,000-run sample) and lower efficiency.</li>
+    <li><b>Strict priority for jump spots</b> (a higher-priority party ignores the jump pads it holds for lower-priority parties when choosing its own): fixed seed 26 and others in group 1, but overall 33 of 219 still reuse and 5 in the sample.</li>
+    <li><b>Assuming others still see me at my old position</b> (aimed at group 2): together with strict priority, 39 of 219 and 10 in the sample. The extra reservations block the party's own walk, so it jumps when nobody expects it.</li>
   </ul>
+  <p>A pattern across these attempts: any reservation that one party makes and the others do not make the same way can block that party's own walk and produce a jump nobody predicted, which is group 3 again.</p>
 
   <p class="small" style="margin-top:40px">Case numbers in the tracer: N = n, d = d, seed, delivery = mode, sender order = schedule. In the tracer, click a step in the log on the right to see each party's view at that point (believed positions, reserved and held pads).</p>
 </main>
