@@ -54,11 +54,13 @@ const KEEP_NEXT = process.env.KEEP_NEXT==='1';         // old Rule 11 (removed 2
 const SELF_LAG = process.env.SELF_LAG==="1";         // SELF_LAG=1 reproduces the old bug: a party's own position in its view lagged one send behind
 const HALT_ALL = process.env.HALT_ALL || "instant";   // Rule 12, default "instant": stop everyone when one party halts; HALT_ALL=off -> old behaviour. instant = oracle stop; msg = the halting party broadcasts a halt notice, each party stops when it receives it
 const TWO_TIMELINES = process.env.TWO_TIMELINES!=="0";   // Rule 14 (default ON): reserve walk + jump timelines for head-on parties; TWO_TIMELINES=0 -> off
+const HOLD_AFTER_JUMP = process.env.HOLD_AFTER_JUMP!=="0"; // Rule 17 hold the walk after a held jumpspot (default ON)
+const FREE_HELD = process.env.FREE_HELD!=="0";        // Rule 16 free held jump pads once the actual jump is known (default ON); FREE_HELD=0 -> off
 const SELF_RES = process.env.SELF_RES!=="0";          // Rule 15 own reservation in priority order (default ON); SELF_RES=0 -> off
 const SELF_AHEAD = process.env.SELF_AHEAD!=="0";      // Rule 13 legal landings only + recompute after own move (default ON); SELF_AHEAD=0 -> off
 const FRONT_ONLY = process.env.FRONT_ONLY==="1";      // Rule 3 checks only the lander's front side (FRONT_ONLY=1); default: both sides
 const FALLBACK = process.env.FALLBACK || "off";       // experimental: reserve one pad at the next jumpspot when no node is valid (first|best)
-E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK, frontOnly:FRONT_ONLY, selfAhead:SELF_AHEAD, twoTimelines:TWO_TIMELINES, selfRes:SELF_RES});
+E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK, frontOnly:FRONT_ONLY, selfAhead:SELF_AHEAD, twoTimelines:TWO_TIMELINES, selfRes:SELF_RES, freeHeld:FREE_HELD, holdAfterJump:HOLD_AFTER_JUMP});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
@@ -83,6 +85,7 @@ function simulate(cfg){
 
   // views
   const views = new Map();
+  const inflight = [];                                   // {to,from,pad,dir,gseq}
   for(const me of w.parties){
     const others=new Map();
     for(const k of w.parties) if(k.id!==me.id) others.set(k.id,{pos:k.pos,dir:k.dir,buf:[]});
@@ -91,7 +94,6 @@ function simulate(cfg){
     views.set(me.id,v);
   }
 
-  const inflight = [];                                   // {to,from,pad,dir,gseq}
   let g = 0;
   const sentCount = {0:0,1:0,2:0,3:0};
   const maxRecv = {};                                    // maxRecv[obs][sender] = highest gseq received
@@ -305,7 +307,7 @@ if(!isMainThread && workerData && workerData.suiteWorker){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="instant"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + (FRONT_ONLY?"_frontonly":"") + (SELF_AHEAD?"":"_noselfahead") + (TWO_TIMELINES?"":"_notwotimelines") + (SELF_RES?"":"_noselfres") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="instant"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + (FRONT_ONLY?"_frontonly":"") + (SELF_AHEAD?"":"_noselfahead") + (TWO_TIMELINES?"":"_notwotimelines") + (SELF_RES?"":"_noselfres") + (FREE_HELD?"":"_nofreeheld") + (HOLD_AFTER_JUMP?"":"_noholdafterjump") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);

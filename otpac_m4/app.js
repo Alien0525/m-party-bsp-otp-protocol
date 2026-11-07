@@ -1,6 +1,6 @@
 // ===========================================================================
 // OTPAC m=4 · interactive monitor (UI driver for otpac_m4.js).
-// The protocol logic lives entirely in otpac_m4.js (Rules R1-R9 with both-side clearance, R12-R15); this file
+// The protocol logic lives entirely in otpac_m4.js (Rules R1-R9 with both-side clearance, R12-R17); this file
 // only schedules Sends, models the network (at most d undelivered messages per
 // recipient, as in the paper's family U^{4,n}_{A,d}) and draws the state.
 // Parties: A = P0 (->), B = P1 (<-) share arena [1, n/2]; C = P2 (->), D = P3 (<-)
