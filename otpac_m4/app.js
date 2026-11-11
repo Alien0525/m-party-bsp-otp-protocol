@@ -1,6 +1,6 @@
 // ===========================================================================
 // OTPAC m=4 · interactive monitor (UI driver for otpac_m4.js).
-// The protocol logic lives entirely in otpac_m4.js (Rules R1-R9 with both-side clearance, R12-R19); this file
+// The protocol logic lives entirely in otpac_m4.js (Rules R1-R5, R7-R9, R12, R14 walk timeline, R20 announced jumps); this file
 // only schedules Sends, models the network (at most d undelivered messages per
 // recipient, as in the paper's family U^{4,n}_{A,d}) and draws the state.
 // Parties: A = P0 (->), B = P1 (<-) share arena [1, n/2]; C = P2 (->), D = P3 (<-)
@@ -58,7 +58,7 @@ function initSystem() {
 }
 
 // --------------------------------------------------------------------------- network
-function applyRecv(rid, m) { deliverBuffer(views.get(rid), m.from, m.pad, m.dir, N, D, world.nodes, m.sseq); }
+function applyRecv(rid, m) { if (m.ann) { deliverAnn(views.get(rid), m.from, m.q, m.s0, m.pos0, m.aseq, N, D, world.nodes); return; } deliverBuffer(views.get(rid), m.from, m.pad, m.dir, N, D, world.nodes, m.sseq); }
 function removeSet(del) { if (!del.size) return; inflight = inflight.filter(m => !del.has(m)); }
 function deliverBefore(rid) {
     const mine = inflight.filter(m => m.to === rid), del = new Set();
@@ -112,15 +112,29 @@ function stepOnce() {
     if (!me) { finish(); return false; }
     deliverBefore(me.id);
     const v = views.get(me.id); v.self.pos = me.pos; v.self.dir = me.dir;
-    const nx = nextSlot(me.pos, me.dir, v, N, D, world.nodes);
-    steps++;
     const L = LETTERS[me.id];
+    let nx;
+    if (isAnnounce()) {                         // Rule 20: announce the jump d+1 times, then land
+        const act = annMove(me.pos, me.dir, me.ann || null, v, N, D, world.nodes);
+        if (act && act.type === 'ann') {
+            steps++;
+            if (act.fresh) { me.aseqN = (me.aseqN || 0) + 1; me.ann = { q: act.q, left: D + 1, aseq: me.aseqN, s0: me.sent, pos0: me.pos }; }
+            me.ann.left--; gseq++;
+            const why = act.why === 'clash' ? ' (gave up its earlier spot: another party announced the same pad)' : act.why === 'recheck' ? ' (gave up its earlier spot: no longer clear)' : '';
+            log(`[${steps}] ${L} announces "jumping to ${me.ann.q}" (${D + 1 - me.ann.left}/${D + 1}, no pad used)${act.fresh ? why : ''}`, 'warn');
+            for (const k of world.parties) if (k.id !== me.id) inflight.push({ to: k.id, from: me.id, ann: true, q: me.ann.q, s0: me.ann.s0, pos0: me.ann.pos0, aseq: me.ann.aseq, gseq });
+            deliverAfterSend(); capQueues(); renderAll(); return true;
+        }
+        nx = !act ? null : act.type === 'walk' ? { pad: act.pad, jumped: false, face: me.dir } : { pad: act.q, jumped: true, face: me.dir };
+        if (act && act.type === 'land') me.ann = null;
+    } else nx = nextSlot(me.pos, me.dir, v, N, D, world.nodes);
+    steps++;
     if (!nx) {
         for (const p of world.parties) p.halted = true;   // Rule 12: one party halts -> protocol halts
         log(`[${steps}] ${L} @${me.pos}: next pad refused and no BSP node has > 2d = ${2 * D} free pads on its walking side → ${L} halts, so the protocol halts (Rule 12).`, 'warn');
         finish(); renderAll(); return false;
     }
-    if (world.used.has(nx.pad)) {     // edge case: views disagreed on a jump
+    if (world.used.has(nx.pad)) {     // edge case: views disagreed
         haltInfo = { reuse: true, pad: nx.pad, party: me.id };
         log(`[${steps}] ${L} would use pad ${nx.pad}, already used by ${LETTERS[world.used.get(nx.pad)]} → potential reuse, protocol halts.`, 'err');
         finish(); renderAll(); return false;

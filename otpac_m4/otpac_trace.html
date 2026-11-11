@@ -58,7 +58,7 @@
 </head>
 <body>
 <header>
-  <h1>OTPAC m=4 · individual-jump · async trace</h1>
+  <h1>OTPAC m=4 · announced jumps · async trace</h1>
   <div class="controls">
     <div class="fld"><label>N (pad size)</label><input id="inN" type="number" value="256" min="16" style="width:90px"></div>
     <div class="fld"><label>d (buffer)</label><input id="inD" type="number" value="2" min="1" style="width:70px"></div>
@@ -91,6 +91,16 @@
         <option value="greedy-gap">greedy-gap (closest-to-collision first)</option>
         <option value="stale-max">stale-max (most-undelivered first)</option>
       </select>
+    </div>
+    <div class="fld"><label>jumps</label>
+      <select id="inProto">
+        <option value="ann" selected>announced (Rule 20)</option>
+        <option value="ann-norecheck">announced, no re-check</option>
+        <option value="pred">predicted (old R1–R19)</option>
+      </select>
+    </div>
+    <div class="fld"><label>parties</label>
+      <select id="inParties"><option value="4" selected>4</option><option value="3">3 (P3 silent)</option></select>
     </div>
     <div class="fld"><label>max steps</label><input id="inMax" type="number" value="20000" style="width:100px"></div>
     <div class="fld"><label>known failing case</label>
@@ -141,6 +151,7 @@
       <span class="mut">|</span>
       <label><input type="checkbox" class="ft" value="WALK" checked>walk</label>
       <label><input type="checkbox" class="ft" value="JUMP" checked>jump</label>
+      <label><input type="checkbox" class="ft" value="ANNOUNCE" checked>announce</label>
       <label><input type="checkbox" class="ft" value="HALT" checked>halt</label>
       <label><input type="checkbox" class="ft" value="REUSE" checked>reuse</label>
     </div>
@@ -231,6 +242,19 @@
 //     if a pad Y predicts for X is also reserved or held for another party in Y's view, X may
 //     have to step around it (R1), so Y also reserves X's path that respects every buffer,
 //     usually a jump, in addition to X's walk and jump timelines.
+// 20. Announced jumps (announce, default ON, Prof. Di Crescenzo 2026-11-10): a party whose next
+//     pad is blocked picks its jumpspot q (Rules 2-3) and announces "I jump to q" as d+1 separate
+//     public messages that use no pad (with its current position, message count and a round #).
+//     After them every party has received at least one. On its next turn it gives up q and
+//     announces again if it has seen a clashing announcement (another party's latest announcement
+//     for the same pad) or, with recheck ON (default), if q no longer passes Rule 3 in its view;
+//     otherwise it sends its next message on q. Observers no longer predict jumps: they reserve a
+//     party's walk, and once they know its announcement, exactly its walk up to the announced
+//     position, then q and the d-1 pads after it.
+//     With Rule 20 ON these earlier rules are NOT used (kept as options, announce=false):
+//       6 (speculative jumpspots), 13 (legal landings), 15 (own reservation), 16-19 (held jump
+//       pads, conflict paths); 14 keeps only the walk timeline; 8(b) is exact (every skipped
+//       message is a walk or the announced landing); 9 holds walk pads only.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -256,7 +280,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, freeHeld:true, holdAfterJump:true, keepJumpHeld:true, conflictAlt:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, freeHeld:true, holdAfterJump:true, keepJumpHeld:true, conflictAlt:true, announce:true, recheck:true};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -381,6 +405,7 @@ function selfAheadPads(view,n,d){
 function predStep(view,X,p,dir,blocked,resDir,extra,n,d,nodes){
   const lin=p+dir;
   if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};
+  if(OPT.announce) return null;                    // Rule 20: jumps are announced, never predicted
   let L=landingWalls(view,X,blocked,resDir,extra);
   const ahead=selfAheadPads(view,n,d);
   if(OPT.selfRes && view.selfRes && view.selfRes.length && X>selfIdOf(view)) for(const q of view.selfRes) if(!ahead.includes(q)) ahead.push(q);   // Rule 15
@@ -439,7 +464,7 @@ function refreshAll(view,n,d,nodes){
   if(OPT.twoTimelines){                    // Rule 14: every party's walk timeline, once per pass
     view._W=new Map(); for(const [id,o] of view.others) if(typeof id==="number") view._W.set(id,pathFor(view,id,n,d,nodes,-o.dir,null));
   }
-  for(let id=0;id<N;id++){ if(id===sid){ computeSelfClaim(view,n,d,nodes); computeSelfRes(view,n,d,nodes); } else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
+  for(let id=0;id<N;id++){ if(id===sid){ if(!OPT.announce){ computeSelfClaim(view,n,d,nodes); computeSelfRes(view,n,d,nodes); } } else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
   view._W=null;
 }
 
@@ -583,9 +608,101 @@ function refreshTimelines(observerView,k,n,d,nodes){
   }
   ko.buf=buf;
 }
+// ---------------------------------------------------------------------------
+// Rule 20: ANNOUNCED JUMPS (announce, default ON, Prof. Di Crescenzo / Aman 2026-11-10).
+// A party whose next pad is blocked does not jump straight away: it picks its jumpspot q
+// (Rules 2-3) and sends the public announcement "I jump to q" as d+1 separate messages that
+// use NO pad. Each announcement carries the sender's position and real-message count at that
+// moment (pos0, s0) and a round number. After d+1 messages at most d can be undelivered to any
+// party, so every party has received at least one. On its next turn the party:
+//   - gives up q and announces a new spot if it has seen a clashing announcement (another
+//     party's latest announcement for the same pad), or, with recheck ON, if q no longer
+//     passes Rule 3 in its view (someone may have walked close while it was announcing);
+//   - otherwise sends its next real message on q and walks on from there.
+// Observers never predict jumps: for X they reserve X's walk (Rule 14 walk timeline), or, once
+// they know X's latest announcement, exactly the walk up to pos0, then q and the d-1 pads after it.
+// ---------------------------------------------------------------------------
+function finalAnns(o){                               // latest announcement per round start s0
+  const m=new Map(); if(o.anns) for(const a of o.anns.values()){ const b=m.get(a.s0); if(!b||a.aseq>b.aseq) m.set(a.s0,a); }
+  return m;
+}
+function activeAnn(o){                               // X's latest announcement, if X has not landed yet (in this view)
+  if(!o.anns) return null; let best=null;
+  for(const a of o.anns.values()) if(!best||a.aseq>best.aseq) best=a;
+  return (best && best.s0>=(o.lastNum||0)) ? best : null;
+}
+function refreshAnnounce(view,k,n,d,nodes){
+  const ko=view.others.get(k), dir=ko.dir, last=ko.lastNum||0, used=view.used;
+  const a=activeAnn(ko);
+  let W;
+  if(a){ W=[]; for(let q=ko.pos+dir; dir*(a.pos0-q)>=0 && W.length<d; q+=dir) W.push(q); }   // certain walk up to pos0
+  else W=pathFor(view,k,n,d,nodes,-dir,null);                    // walk timeline (stops when blocked)
+  const L=[];
+  if(a) for(let j=0,q=a.q; j<d && q>=1 && q<=n; j++, q+=dir){ if(j>0 && used && used.has(q)) break; L.push(q); }
+  const seq=W.concat(L), fwd=[]; for(const q of seq) if(!fwd.includes(q)) fwd.push(q);
+  ko.seqs=[seq]; ko.fwd=fwd; ko.landClaim=new Set();
+  const buf=fwd.slice();
+  if(OPT.sticky){                                                 // Rule 9, walk pads only
+    const held=ko.held||(ko.held=new Map());
+    if(a){ for(const [q] of [...held]) if(!fwd.includes(q)) held.delete(q); }   // the announcement says exactly where X goes
+    else for(let i=0;i<W.length;i++){ const q=W[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
+    for(const [q] of [...held]){ if(used && used.has(q)) held.delete(q); else if(!buf.includes(q)) buf.push(q); }
+  }
+  ko.buf=buf;
+}
+// observer receives an announcement from X
+function deliverAnn(view,fromId,q,s0,pos0,aseq,n,d,nodes){
+  const o=view.others.get(fromId); if(!o) return;
+  const anns=o.anns||(o.anns=new Map());
+  if(!anns.has(aseq)) anns.set(aseq,{q,s0,pos0,aseq});
+  refreshAll(view,n,d,nodes);
+}
+// is `cand` still a valid landing for a mover in `dir` (Rule 3), in this occupancy?
+function nodeValid(cand,dir,blocked,resDir,n,d){
+  if(cand<1||cand>n||blocked.has(cand)) return false;
+  const left = dir===+1 ? cand-1 : cand, right = left+1;
+  const front = dir===+1 ? clearOutside(right,+1,blocked,n) : clearOutside(left,-1,blocked,n);
+  const back = (OPT.oppExempt && resDir)
+    ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,null) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,null))
+    : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
+  return front>2*d && (OPT.frontOnly || back>2*d);
+}
+// a party's own next action under Rule 20. st = its current announcement round or null.
+// returns {type:"walk",pad} | {type:"ann",q,fresh,why} | {type:"land",q} | null (halt)
+function annMove(pos,dir,st,view,n,d,nodes){
+  const {blocked,resDir}=occupancy(view);
+  const pick=()=>jumpTarget(dir,blocked,n,d,nodes,resDir,passMap(view));
+  if(st && st.left>0) return {type:"ann",q:st.q,fresh:false};
+  if(st){
+    let why=null;
+    for(const [id,o] of view.others){ if(typeof id!=="number") continue;
+      for(const a of finalAnns(o).values()) if(a.q===st.q){ why="clash"; break; } if(why) break; }
+    if(!why && OPT.recheck && !nodeValid(st.q,dir,blocked,resDir,n,d)) why="recheck";
+    if(!why) return {type:"land",q:st.q};
+    const q=pick(); if(q==null) return null;
+    return {type:"ann",q,fresh:true,why};
+  }
+  const lin=pos+dir;
+  if(lin>=1 && lin<=n && !blocked.has(lin)) return {type:"walk",pad:lin};
+  const q=pick(); if(q==null) return null;
+  return {type:"ann",q,fresh:true,why:null};
+}
+// Rule 8(b) under Rule 20: every skipped real message is known exactly (walks, or the
+// announced landing and the walk after it). Returns false if the pad does not fit.
+function assumeSkippedAnn(view,o,pad,last,num,n){
+  const dir=o.dir, fa=[...finalAnns(o).values()].filter(a=>a.s0>=last).sort((x,y)=>x.s0-y.s0);
+  const at=c=>{ let a=null; for(const x of fa) if(x.s0<c) a=x; return a ? a.q+(c-a.s0-1)*dir : o.pos+(c-last)*dir; };
+  if(at(num)!==pad) return false;
+  for(let c=last+1;c<num;c++){ const q=at(c); if(q<1||q>n) continue;
+    if(view.used) view.used.add(q); (o.assumed=o.assumed||[]).push(q); (o.assumedLog=o.assumedLog||[]).push({pad:q,kase:"predicted"}); }
+  return true;
+}
+function isAnnounce(){ return !!OPT.announce; }
+
 function refreshBuffer(observerView,k,n,d,nodes){
   const ko=observerView.others.get(k);
   if(!ko) return;
+  if(OPT.announce) return refreshAnnounce(observerView,k,n,d,nodes);
   if(OPT.twoTimelines) return refreshTimelines(observerView,k,n,d,nodes);
   ko.seqs=null;
   let p=ko.pos, dir=ko.dir;
@@ -654,7 +771,7 @@ function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
       if(k>0){
         // Rule 8(b) marks every pad the skipped messages could have used; if that
         // accounting is complete, the skipped numbers count as resolved (Rule 9).
-        const accounted=assumeSkipped(observerView,o,pad,k,n);
+        const accounted=(OPT.announce && assumeSkippedAnn(observerView,o,pad,last,num,n)) || assumeSkipped(observerView,o,pad,k,n);
         if(accounted) for(let c=last+1;c<num;c++) recv.add(c);
       }
       o.lastNum=num;
@@ -667,7 +784,7 @@ function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
     recv.add(num);
     o.prefix=o.prefix||0; while(recv.has(o.prefix+1)) o.prefix++;
     if(o.held) for(const [q,s] of o.held) if(s<=o.prefix && !(OPT.keepJumpHeld && o.heldJump && o.heldJump.has(q))){ o.held.delete(q); if(o.heldLand) o.heldLand.delete(q); }
-    if(OPT.freeHeld){                                                     // Rule 16
+    if(OPT.freeHeld && !OPT.announce){                                    // Rule 16
       const pads=o.pads||(o.pads=new Map()); pads.set(num,{pad,dir});
       let jumpKnown=false; o.conf=o.conf||0;
       while(o.conf<o.prefix){
@@ -746,7 +863,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
   const ids=w.parties.map(p=>p.id);const P=id=>w.parties.find(p=>p.id===id);
   const targetParty=ids[Math.floor(aux()*4)], fav=ids[Math.floor(aux()*4)], favArena=Math.floor(aux()*2);
   const sil1=ids[Math.floor(aux()*4)], sil2=ids[(ids.indexOf(sil1)+1+Math.floor(aux()*3))%4];
-  const silent=new Set(sched==="silent1"?[sil1]:sched==="silent2"?[sil1,sil2]:[]);
+  const silent=new Set(sched==="silent1"?[sil1]:sched==="silent2"?[sil1,sil2]:[]);if(THREE_P)silent.add(3);
   const firstPair=Math.floor(aux()*2);
   const sent={0:[],1:[],2:[],3:[]};const heard={};
   for(const o of w.parties){heard[o.id]={};for(const k of w.parties)if(k.id!==o.id)heard[o.id][k.id]=0;}
@@ -755,7 +872,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     const v={self:{pos:me.pos,dir:me.dir},others,used:new Set()};
     for(const k of w.parties)if(k.id!==me.id)refreshBuffer(v,k.id,n,d,w.nodes);views.set(me.id,v);}
   let g=0;
-  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);heard[rid][m.from]++;}
+  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;if(m.ann){deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d,w.nodes);return;}deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);heard[rid][m.from]++;}
   function removeSet(del){if(!del.size)return;const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);}
   function deliverBefore(rid){
     if(mode==="random"||mode==="adversarial"){const pe=mode==="random"?0.5:0.1;const del=new Set();
@@ -819,7 +936,20 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     const prev=me.pos,pdir=me.dir;
     deliverBefore(me.id);
     const v=views.get(me.id);v.self.pos=me.pos;v.self.dir=me.dir;
-    const nx=nextSlot(me.pos,me.dir,v,n,d,w.nodes);steps++;
+    let nx;
+    if(OPT.announce){const act=annMove(me.pos,me.dir,me.ann||null,v,n,d,w.nodes);
+      if(act&&act.type==="ann"){steps++;
+        if(act.fresh){me.aseqN=(me.aseqN||0)+1;me.ann={q:act.q,left:d+1,aseq:me.aseqN,s0:me.sent,pos0:me.pos};}
+        me.ann.left--;g++;
+        for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,ann:true,q:me.ann.q,s0:me.ann.s0,pos0:me.ann.pos0,aseq:me.ann.aseq,gseq:g});
+        deliverAfterSend();capQueues();
+        const why=act.why==="clash"?" (gave up: clashing announcement seen)":act.why==="recheck"?" (gave up: spot no longer clear)":"";
+        events.push({step:steps,type:"ANNOUNCE",actor:me.id,from:prev,to:me.ann.q,note:`announces jump to ${me.ann.q} (${d+1-me.ann.left}/${d+1})${act.fresh?why:""}`,snap:snapshot()});
+        continue;}
+      nx=!act?null:act.type==="walk"?{pad:act.pad,jumped:false,face:me.dir}:{pad:act.q,jumped:true,face:me.dir};
+      if(act&&act.type==="land")me.ann=null;
+    } else nx=nextSlot(me.pos,me.dir,v,n,d,w.nodes);
+    steps++;
     if(!nx){me.halted=true;for(const p of w.parties)p.halted=true;events.push({step:steps,type:"HALT",actor:me.id,from:prev,to:prev,note:`no legal jumpspot -> protocol HALTED (Rule 12), ${n-w.used.size} pads wasted`,snap:snapshot()});break;}
     if(w.used.has(nx.pad)){reuse={pad:nx.pad,first:w.used.get(nx.pad),second:me.id,step:steps,wasted:n-w.used.size};
       events.push({step:steps,type:"REUSE",actor:me.id,from:prev,to:nx.pad,jumped:nx.jumped,node:nx.jumped?(pdir>0?nx.pad-1:nx.pad):null,
@@ -843,7 +973,9 @@ let RUN=null, SEL=0;
 const $=id=>document.getElementById(id);
 function classP(id){return "p"+id;}
 
+let THREE_P=false;
 function run(){
+  const proto=$("inProto").value; setOptions({announce:proto!=="pred", recheck:proto!=="ann-norecheck"}); THREE_P=$("inParties").value==="3";
   const n=+$("inN").value,d=+$("inD").value,seed=+$("inSeed").value,mode=$("inMode").value,pick=$("inPick").value,max=+$("inMax").value;
   RUN=simulate(n,d,seed,mode,pick,max);
   SEL=RUN.events.length-1;
@@ -875,7 +1007,7 @@ function renderLog(){
   RUN.events.forEach((e,i)=>{
     if(!passFilter(e))return;
     const tr=document.createElement("tr");
-    tr.className=(i===SEL?"sel ":"")+(e.type==="REUSE"?"evReuse ":"")+(e.type==="JUMP"?"evJump ":"");
+    tr.className=(i===SEL?"sel ":"")+(e.type==="REUSE"?"evReuse ":"")+(e.type==="JUMP"||e.type==="ANNOUNCE"?"evJump ":"");
     const ft=e.from!==undefined?`${e.from}${e.actor>=0&&RUN.events[i].snap.positions[e.actor]?'':''}→${e.to}`:"";
     tr.innerHTML=`<td>${e.step}</td>`
       +`<td class="${e.actor>=0?classP(e.actor):'mut'}">${e.actor>=0?'P'+e.actor:'—'}</td>`
@@ -942,7 +1074,7 @@ $("inCase").onchange=e=>{ if(!e.target.value) return; const [n,d,seed,mode,pick]
   $("inN").value=n; $("inD").value=d; $("inSeed").value=seed; $("inMode").value=mode; $("inPick").value=pick; run(); };
 // URL parameters, e.g. otpac_trace.html?n=50&d=2&seed=1002&mode=worst&pick=silent2
 try{ const q=new URLSearchParams(location.search);
-  const map={n:"inN",d:"inD",seed:"inSeed",mode:"inMode",pick:"inPick"};
+  const map={n:"inN",d:"inD",seed:"inSeed",mode:"inMode",pick:"inPick",jumps:"inProto",parties:"inParties"};
   for(const k in map) if(q.get(k)!=null) $(map[k]).value=q.get(k); }catch(err){}
 $("scrub").oninput=e=>{SEL=+e.target.value;renderLog();renderStep();};
 document.querySelectorAll('.fp,.ft').forEach(c=>c.onchange=renderLog);

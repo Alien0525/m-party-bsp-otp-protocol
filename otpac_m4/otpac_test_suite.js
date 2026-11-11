@@ -61,15 +61,18 @@ const FREE_HELD = process.env.FREE_HELD!=="0";        // Rule 16 free held jump 
 const SELF_RES = process.env.SELF_RES!=="0";          // Rule 15 own reservation in priority order (default ON); SELF_RES=0 -> off
 const SELF_AHEAD = process.env.SELF_AHEAD!=="0";      // Rule 13 legal landings only + recompute after own move (default ON); SELF_AHEAD=0 -> off
 const FRONT_ONLY = process.env.FRONT_ONLY==="1";      // Rule 3 checks only the lander's front side (FRONT_ONLY=1); default: both sides
-const FALLBACK = process.env.FALLBACK || "off";       // experimental: reserve one pad at the next jumpspot when no node is valid (first|best)
-E.setOptions({sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK, frontOnly:FRONT_ONLY, selfAhead:SELF_AHEAD, twoTimelines:TWO_TIMELINES, selfRes:SELF_RES, freeHeld:FREE_HELD, holdAfterJump:HOLD_AFTER_JUMP, keepJumpHeld:KEEP_JUMP_HELD, conflictAlt:CONFLICT_ALT});
+const FALLBACK = process.env.FALLBACK || "off";
+const ANNOUNCE = process.env.ANNOUNCE!=="0";            // Rule 20 announced jumps (default ON); ANNOUNCE=0 -> old predicted jumps (R1-R19)
+const RECHECK = process.env.RECHECK!=="0";              // Rule 20 re-check of the jumpspot after the last announcement (default ON)
+const THREE = process.env.THREE==="1";                  // 3-party test: P3 stays silent at pad n for the whole run       // experimental: reserve one pad at the next jumpspot when no node is valid (first|best)
+E.setOptions({announce:ANNOUNCE, recheck:RECHECK, sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK, frontOnly:FRONT_ONLY, selfAhead:SELF_AHEAD, twoTimelines:TWO_TIMELINES, selfRes:SELF_RES, freeHeld:FREE_HELD, holdAfterJump:HOLD_AFTER_JUMP, keepJumpHeld:KEEP_JUMP_HELD, conflictAlt:CONFLICT_ALT});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
 // ---------------------------------------------------------------------------
 function simulate(cfg){
   const {n,d,seed,mode,sched} = cfg;
-  const maxSteps = cfg.maxSteps || (4*n+50);          // steps <= n+4 always; exceeding = liveness bug
+  const maxSteps = cfg.maxSteps || (4*n+50 + (ANNOUNCE ? 200*(d+1) : 0));   // announcements take steps but no pads          // steps <= n+4 always; exceeding = liveness bug
   const w = E.initWorld(n,d,4);
   const rng = mulberry32(seed);                          // main stream (legacy-compatible)
   const aux = mulberry32(((seed*2654435761)>>>0) ^ 0x5bd1e995); // seeded choices for new modes/schedules
@@ -83,6 +86,7 @@ function simulate(cfg){
   const sil1 = ids[Math.floor(aux()*4)];
   const sil2 = ids[(ids.indexOf(sil1) + 1 + Math.floor(aux()*3)) % 4];   // always different from sil1
   const silent = new Set(sched==="silent1"?[sil1]:sched==="silent2"?[sil1,sil2]:[]);
+  if(THREE || cfg.three) silent.add(3);                  // 3-party protocol = 4-party with P3 silent
   const firstPair = Math.floor(aux()*2);
 
   // views
@@ -110,6 +114,7 @@ function simulate(cfg){
   function applyRecv(rid,m){
     const v=views.get(rid); if(!v.others.get(m.from)) return;
     if(m.halt){ w.parties.find(p=>p.id===rid).halted=true; return; }   // HALT_ALL=msg: halt notice
+    if(m.ann){ E.deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d,w.nodes); noteRes(rid); return; }   // Rule 20 announcement
     if(cfg.log) cfg.log.push(`deliver ${"ABCD"[m.from]}#${m.sseq}(pad ${m.pad})→${"ABCD"[rid]}`);
     // Rule 8: pass the sender's message number (m.sseq). With LEGACY_RECEIVE=1 the
     // number is withheld, reproducing the old behaviour (position always moves to
@@ -205,6 +210,7 @@ function simulate(cfg){
   }
 
   let lastRho=0, steps=0, reuse=null, badWrite=0, invViol=0, maxPending=0;
+  const annStats={rounds:0,clash:0,recheck:0,msgs:0};
   while(steps<maxSteps){
     if(cfg.switchWhen && cfg.switchWhen({w,views,inflight,n,d})){   // hand the current state to the exhaustive checker
       return { switched:true, steps, snapshot: structuredClone({ parties:w.parties.map(p=>({id:p.id,pos:p.pos,dir:p.dir,halted:!!p.halted,sent:p.sent})),
@@ -218,7 +224,21 @@ function simulate(cfg){
     if(pend>maxPending) maxPending=pend;
     if(pend>d) invViol++;
     const v = views.get(me.id); v.self.pos=me.pos; v.self.dir=me.dir;
-    const nx = E.nextSlot(me.pos,me.dir,v,n,d,w.nodes);
+    let nx;
+    if(ANNOUNCE){                                             // Rule 20
+      const act = E.annMove(me.pos,me.dir,me.ann||null,v,n,d,w.nodes);
+      if(act && act.type==="ann"){
+        steps++;
+        if(act.fresh){ if(act.why==="clash") annStats.clash++; else if(act.why==="recheck") annStats.recheck++; else annStats.rounds++;
+          me.aseqN=(me.aseqN||0)+1; me.ann={q:act.q,left:d+1,aseq:me.aseqN,s0:me.sent,pos0:me.pos}; }
+        me.ann.left--; annStats.msgs++;
+        if(cfg.log) cfg.log.push(`${"ABCD"[me.id]} announces jump to ${me.ann.q} (${d+1-me.ann.left}/${d+1})`);
+        for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,ann:true,q:me.ann.q,s0:me.ann.s0,pos0:me.ann.pos0,aseq:me.ann.aseq,gseq:++g});
+        deliverAfterSend(); capQueues(); continue;
+      }
+      nx = !act ? null : act.type==="walk" ? {pad:act.pad,jumped:false,face:me.dir} : {pad:act.q,jumped:true,face:me.dir};
+      if(act && act.type==="land") me.ann=null;
+    } else nx = E.nextSlot(me.pos,me.dir,v,n,d,w.nodes);
     steps++;
     if(!nx){ me.halted=true;
       // efficiency diagnostic: pads this party treats as occupied but that are unused (rho)
@@ -264,7 +284,7 @@ function simulate(cfg){
   let jumps=0, rho=lastRho; for(const [,inf] of padInfo) if(inf.jumped) jumps++;
   let runsEnd=0, maxRunEnd=0, cur=0; for(let q=1;q<=n+1;q++){ if(q<=n && !w.used.has(q)) cur++; else { if(cur>0){runsEnd++; maxRunEnd=Math.max(maxRunEnd,cur);} cur=0; } }
   return { assume, n,d,seed,mode,sched, used, eff:used/n, wasted:n-used, steps, timeout:steps>=maxSteps, jumps, runsEnd, maxRunEnd, rho,
-           reuse, badWrite, invViol, maxPending, lateOlder };
+           reuse, badWrite, invViol, maxPending, lateOlder, ann:annStats };
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +329,7 @@ if(!isMainThread && workerData && workerData.suiteWorker){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="instant"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + (FRONT_ONLY?"_frontonly":"") + (SELF_AHEAD?"":"_noselfahead") + (TWO_TIMELINES?"":"_notwotimelines") + (SELF_RES?"":"_noselfres") + (FREE_HELD?"":"_nofreeheld") + (HOLD_AFTER_JUMP?"":"_noholdafterjump") + (KEEP_JUMP_HELD?"":"_nokeepjumpheld") + (CONFLICT_ALT?"":"_noconflictalt") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="instant"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + (FRONT_ONLY?"_frontonly":"") + (SELF_AHEAD?"":"_noselfahead") + (TWO_TIMELINES?"":"_notwotimelines") + (SELF_RES?"":"_noselfres") + (FREE_HELD?"":"_nofreeheld") + (HOLD_AFTER_JUMP?"":"_noholdafterjump") + (KEEP_JUMP_HELD?"":"_nokeepjumpheld") + (CONFLICT_ALT?"":"_noconflictalt") + (ANNOUNCE?"_announce":"") + (RECHECK?"":"_norecheck") + (THREE?"_3p":"") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);

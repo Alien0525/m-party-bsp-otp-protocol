@@ -20,6 +20,7 @@
 //   or, as a module: explore(n, d, {start, maxStates})  (start = a mid-run state)
 // ===========================================================================
 const E = require("./otpac_m4.js");
+E.setOptions({announce:false});   // this tool drives the older predicted-jump protocol (R1-R19); Rule 20 runs in otpac_test_suite.js
 
 function initState(n, d) {
   const w = E.initWorld(n, d, 4);

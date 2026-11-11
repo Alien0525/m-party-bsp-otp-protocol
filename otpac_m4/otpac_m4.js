@@ -77,6 +77,19 @@
 //     if a pad Y predicts for X is also reserved or held for another party in Y's view, X may
 //     have to step around it (R1), so Y also reserves X's path that respects every buffer,
 //     usually a jump, in addition to X's walk and jump timelines.
+// 20. Announced jumps (announce, default ON, Prof. Di Crescenzo 2026-11-10): a party whose next
+//     pad is blocked picks its jumpspot q (Rules 2-3) and announces "I jump to q" as d+1 separate
+//     public messages that use no pad (with its current position, message count and a round #).
+//     After them every party has received at least one. On its next turn it gives up q and
+//     announces again if it has seen a clashing announcement (another party's latest announcement
+//     for the same pad) or, with recheck ON (default), if q no longer passes Rule 3 in its view;
+//     otherwise it sends its next message on q. Observers no longer predict jumps: they reserve a
+//     party's walk, and once they know its announcement, exactly its walk up to the announced
+//     position, then q and the d-1 pads after it.
+//     With Rule 20 ON these earlier rules are NOT used (kept as options, announce=false):
+//       6 (speculative jumpspots), 13 (legal landings), 15 (own reservation), 16-19 (held jump
+//       pads, conflict paths); 14 keeps only the walk timeline; 8(b) is exact (every skipped
+//       message is a walk or the announced landing); 9 holds walk pads only.
 // ===========================================================================
 
 function bspNodes(n){                      // static BSP center-pad pairs, root-first
@@ -102,7 +115,7 @@ function initWorld(n,d,m){
 //                  follow the older Rule 6 (dropped as soon as the prediction changes)
 //   oppExempt -- Rule 3 refinement: on the lander's back side, pads merely reserved for
 //                parties moving the opposite way (away from the node) are not obstacles
-const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, freeHeld:true, holdAfterJump:true, keepJumpHeld:true, conflictAlt:true};
+const OPT={sticky:true, oppExempt:true, stickyJumps:true, sharedSlots:false, contested:"off", backPass:false, fallback:"off", frontOnly:false, selfAhead:true, twoTimelines:true, selfRes:true, freeHeld:true, holdAfterJump:true, keepJumpHeld:true, conflictAlt:true, announce:true, recheck:true};
 // twoTimelines -- (ON by default, Aman 2026-11-04) Rule 14. When two parties approach head-on and their
 //             predicted pads overlap, the order in which they will meet is unknown, so an
 //             observer reserves BOTH timelines for each of them: (W) the walk timeline, where
@@ -227,6 +240,7 @@ function selfAheadPads(view,n,d){
 function predStep(view,X,p,dir,blocked,resDir,extra,n,d,nodes){
   const lin=p+dir;
   if(lin>=1 && lin<=n && !blocked.has(lin)) return {pad:lin,jumped:false,face:dir};
+  if(OPT.announce) return null;                    // Rule 20: jumps are announced, never predicted
   let L=landingWalls(view,X,blocked,resDir,extra);
   const ahead=selfAheadPads(view,n,d);
   if(OPT.selfRes && view.selfRes && view.selfRes.length && X>selfIdOf(view)) for(const q of view.selfRes) if(!ahead.includes(q)) ahead.push(q);   // Rule 15
@@ -285,7 +299,7 @@ function refreshAll(view,n,d,nodes){
   if(OPT.twoTimelines){                    // Rule 14: every party's walk timeline, once per pass
     view._W=new Map(); for(const [id,o] of view.others) if(typeof id==="number") view._W.set(id,pathFor(view,id,n,d,nodes,-o.dir,null));
   }
-  for(let id=0;id<N;id++){ if(id===sid){ computeSelfClaim(view,n,d,nodes); computeSelfRes(view,n,d,nodes); } else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
+  for(let id=0;id<N;id++){ if(id===sid){ if(!OPT.announce){ computeSelfClaim(view,n,d,nodes); computeSelfRes(view,n,d,nodes); } } else if(view.others.has(id)) refreshBuffer(view,id,n,d,nodes); }
   view._W=null;
 }
 
@@ -429,9 +443,101 @@ function refreshTimelines(observerView,k,n,d,nodes){
   }
   ko.buf=buf;
 }
+// ---------------------------------------------------------------------------
+// Rule 20: ANNOUNCED JUMPS (announce, default ON, Prof. Di Crescenzo / Aman 2026-11-10).
+// A party whose next pad is blocked does not jump straight away: it picks its jumpspot q
+// (Rules 2-3) and sends the public announcement "I jump to q" as d+1 separate messages that
+// use NO pad. Each announcement carries the sender's position and real-message count at that
+// moment (pos0, s0) and a round number. After d+1 messages at most d can be undelivered to any
+// party, so every party has received at least one. On its next turn the party:
+//   - gives up q and announces a new spot if it has seen a clashing announcement (another
+//     party's latest announcement for the same pad), or, with recheck ON, if q no longer
+//     passes Rule 3 in its view (someone may have walked close while it was announcing);
+//   - otherwise sends its next real message on q and walks on from there.
+// Observers never predict jumps: for X they reserve X's walk (Rule 14 walk timeline), or, once
+// they know X's latest announcement, exactly the walk up to pos0, then q and the d-1 pads after it.
+// ---------------------------------------------------------------------------
+function finalAnns(o){                               // latest announcement per round start s0
+  const m=new Map(); if(o.anns) for(const a of o.anns.values()){ const b=m.get(a.s0); if(!b||a.aseq>b.aseq) m.set(a.s0,a); }
+  return m;
+}
+function activeAnn(o){                               // X's latest announcement, if X has not landed yet (in this view)
+  if(!o.anns) return null; let best=null;
+  for(const a of o.anns.values()) if(!best||a.aseq>best.aseq) best=a;
+  return (best && best.s0>=(o.lastNum||0)) ? best : null;
+}
+function refreshAnnounce(view,k,n,d,nodes){
+  const ko=view.others.get(k), dir=ko.dir, last=ko.lastNum||0, used=view.used;
+  const a=activeAnn(ko);
+  let W;
+  if(a){ W=[]; for(let q=ko.pos+dir; dir*(a.pos0-q)>=0 && W.length<d; q+=dir) W.push(q); }   // certain walk up to pos0
+  else W=pathFor(view,k,n,d,nodes,-dir,null);                    // walk timeline (stops when blocked)
+  const L=[];
+  if(a) for(let j=0,q=a.q; j<d && q>=1 && q<=n; j++, q+=dir){ if(j>0 && used && used.has(q)) break; L.push(q); }
+  const seq=W.concat(L), fwd=[]; for(const q of seq) if(!fwd.includes(q)) fwd.push(q);
+  ko.seqs=[seq]; ko.fwd=fwd; ko.landClaim=new Set();
+  const buf=fwd.slice();
+  if(OPT.sticky){                                                 // Rule 9, walk pads only
+    const held=ko.held||(ko.held=new Map());
+    if(a){ for(const [q] of [...held]) if(!fwd.includes(q)) held.delete(q); }   // the announcement says exactly where X goes
+    else for(let i=0;i<W.length;i++){ const q=W[i], s=last+1+i; if(!(held.get(q)>=s)) held.set(q,s); }
+    for(const [q] of [...held]){ if(used && used.has(q)) held.delete(q); else if(!buf.includes(q)) buf.push(q); }
+  }
+  ko.buf=buf;
+}
+// observer receives an announcement from X
+function deliverAnn(view,fromId,q,s0,pos0,aseq,n,d,nodes){
+  const o=view.others.get(fromId); if(!o) return;
+  const anns=o.anns||(o.anns=new Map());
+  if(!anns.has(aseq)) anns.set(aseq,{q,s0,pos0,aseq});
+  refreshAll(view,n,d,nodes);
+}
+// is `cand` still a valid landing for a mover in `dir` (Rule 3), in this occupancy?
+function nodeValid(cand,dir,blocked,resDir,n,d){
+  if(cand<1||cand>n||blocked.has(cand)) return false;
+  const left = dir===+1 ? cand-1 : cand, right = left+1;
+  const front = dir===+1 ? clearOutside(right,+1,blocked,n) : clearOutside(left,-1,blocked,n);
+  const back = (OPT.oppExempt && resDir)
+    ? (dir===+1 ? clearOutsideExempt(left,-1,blocked,n,resDir,-dir,null) : clearOutsideExempt(right,+1,blocked,n,resDir,-dir,null))
+    : (dir===+1 ? clearOutside(left,-1,blocked,n) : clearOutside(right,+1,blocked,n));
+  return front>2*d && (OPT.frontOnly || back>2*d);
+}
+// a party's own next action under Rule 20. st = its current announcement round or null.
+// returns {type:"walk",pad} | {type:"ann",q,fresh,why} | {type:"land",q} | null (halt)
+function annMove(pos,dir,st,view,n,d,nodes){
+  const {blocked,resDir}=occupancy(view);
+  const pick=()=>jumpTarget(dir,blocked,n,d,nodes,resDir,passMap(view));
+  if(st && st.left>0) return {type:"ann",q:st.q,fresh:false};
+  if(st){
+    let why=null;
+    for(const [id,o] of view.others){ if(typeof id!=="number") continue;
+      for(const a of finalAnns(o).values()) if(a.q===st.q){ why="clash"; break; } if(why) break; }
+    if(!why && OPT.recheck && !nodeValid(st.q,dir,blocked,resDir,n,d)) why="recheck";
+    if(!why) return {type:"land",q:st.q};
+    const q=pick(); if(q==null) return null;
+    return {type:"ann",q,fresh:true,why};
+  }
+  const lin=pos+dir;
+  if(lin>=1 && lin<=n && !blocked.has(lin)) return {type:"walk",pad:lin};
+  const q=pick(); if(q==null) return null;
+  return {type:"ann",q,fresh:true,why:null};
+}
+// Rule 8(b) under Rule 20: every skipped real message is known exactly (walks, or the
+// announced landing and the walk after it). Returns false if the pad does not fit.
+function assumeSkippedAnn(view,o,pad,last,num,n){
+  const dir=o.dir, fa=[...finalAnns(o).values()].filter(a=>a.s0>=last).sort((x,y)=>x.s0-y.s0);
+  const at=c=>{ let a=null; for(const x of fa) if(x.s0<c) a=x; return a ? a.q+(c-a.s0-1)*dir : o.pos+(c-last)*dir; };
+  if(at(num)!==pad) return false;
+  for(let c=last+1;c<num;c++){ const q=at(c); if(q<1||q>n) continue;
+    if(view.used) view.used.add(q); (o.assumed=o.assumed||[]).push(q); (o.assumedLog=o.assumedLog||[]).push({pad:q,kase:"predicted"}); }
+  return true;
+}
+function isAnnounce(){ return !!OPT.announce; }
+
 function refreshBuffer(observerView,k,n,d,nodes){
   const ko=observerView.others.get(k);
   if(!ko) return;
+  if(OPT.announce) return refreshAnnounce(observerView,k,n,d,nodes);
   if(OPT.twoTimelines) return refreshTimelines(observerView,k,n,d,nodes);
   ko.seqs=null;
   let p=ko.pos, dir=ko.dir;
@@ -500,7 +606,7 @@ function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
       if(k>0){
         // Rule 8(b) marks every pad the skipped messages could have used; if that
         // accounting is complete, the skipped numbers count as resolved (Rule 9).
-        const accounted=assumeSkipped(observerView,o,pad,k,n);
+        const accounted=(OPT.announce && assumeSkippedAnn(observerView,o,pad,last,num,n)) || assumeSkipped(observerView,o,pad,k,n);
         if(accounted) for(let c=last+1;c<num;c++) recv.add(c);
       }
       o.lastNum=num;
@@ -513,7 +619,7 @@ function deliverBuffer(observerView,fromId,pad,dir,n,d,nodes,num){
     recv.add(num);
     o.prefix=o.prefix||0; while(recv.has(o.prefix+1)) o.prefix++;
     if(o.held) for(const [q,s] of o.held) if(s<=o.prefix && !(OPT.keepJumpHeld && o.heldJump && o.heldJump.has(q))){ o.held.delete(q); if(o.heldLand) o.heldLand.delete(q); }
-    if(OPT.freeHeld){                                                     // Rule 16
+    if(OPT.freeHeld && !OPT.announce){                                    // Rule 16
       const pads=o.pads||(o.pads=new Map()); pads.set(num,{pad,dir});
       let jumpKnown=false; o.conf=o.conf||0;
       while(o.conf<o.prefix){
@@ -570,4 +676,4 @@ function assumeSkipped(view,o,pad,k,n){
   return kase!=="jump" || SKIP_JUMP_POLICY==="both";
 }
 
-if(typeof module!=="undefined") module.exports={bspNodes,initWorld,occupancy,buildBlocked,predBlocked,jumpTarget,stepOf,nextSlot,refreshBuffer,refreshAll,deliverBuffer,setSkipJumpPolicy,setOptions};
+if(typeof module!=="undefined") module.exports={annMove,deliverAnn,isAnnounce,activeAnn,bspNodes,initWorld,occupancy,buildBlocked,predBlocked,jumpTarget,stepOf,nextSlot,refreshBuffer,refreshAll,deliverBuffer,setSkipJumpPolicy,setOptions};
