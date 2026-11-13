@@ -631,11 +631,18 @@ function activeAnn(o){                               // X's latest announcement,
   for(const a of o.anns.values()) if(!best||a.aseq>best.aseq) best=a;
   return (best && best.s0>=(o.lastNum||0)) ? best : null;
 }
+// pad of X's message number c (> last), from X's last known position and its final announcements since then
+function annPadAt(o,last){
+  const dir=o.dir, fa=[...finalAnns(o).values()].filter(a=>a.s0>=last).sort((x,y)=>x.s0-y.s0);
+  return c=>{ let a=null; for(const x of fa) if(x.s0<c) a=x; return a ? a.q+(c-a.s0-1)*dir : o.pos+(c-last)*dir; };
+}
 function refreshAnnounce(view,k,n,d,nodes){
   const ko=view.others.get(k), dir=ko.dir, last=ko.lastNum||0, used=view.used;
   const a=activeAnn(ko);
   let W;
-  if(a){ W=[]; for(let q=ko.pos+dir; dir*(a.pos0-q)>=0 && W.length<d; q+=dir) W.push(q); }   // certain walk up to pos0
+  // exact pads of X's messages before the active announcement: walks, plus earlier announced jumps
+  // that this observer has not yet seen X land on (missing these let a later announcement hide an earlier landing)
+  if(a){ W=[]; const at=annPadAt(ko,last); for(let c=last+1;c<=a.s0;c++){ const q=at(c); if(q>=1&&q<=n) W.push(q); } }
   else W=pathFor(view,k,n,d,nodes,-dir,null);                    // walk timeline (stops when blocked)
   const L=[];
   if(a) for(let j=0,q=a.q; j<d && q>=1 && q<=n; j++, q+=dir){ if(j>0 && used && used.has(q)) break; L.push(q); }
@@ -690,8 +697,7 @@ function annMove(pos,dir,st,view,n,d,nodes){
 // Rule 8(b) under Rule 20: every skipped real message is known exactly (walks, or the
 // announced landing and the walk after it). Returns false if the pad does not fit.
 function assumeSkippedAnn(view,o,pad,last,num,n){
-  const dir=o.dir, fa=[...finalAnns(o).values()].filter(a=>a.s0>=last).sort((x,y)=>x.s0-y.s0);
-  const at=c=>{ let a=null; for(const x of fa) if(x.s0<c) a=x; return a ? a.q+(c-a.s0-1)*dir : o.pos+(c-last)*dir; };
+  const at=annPadAt(o,last);
   if(at(num)!==pad) return false;
   for(let c=last+1;c<num;c++){ const q=at(c); if(q<1||q>n) continue;
     if(view.used) view.used.add(q); (o.assumed=o.assumed||[]).push(q); (o.assumedLog=o.assumedLog||[]).push({pad:q,kase:"predicted"}); }
