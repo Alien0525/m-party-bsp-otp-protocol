@@ -2,6 +2,8 @@
 
 **Rules tested:** R1–R10, the rules in force on 2026-10-08. The current rules (R1–R9 and R11) are covered in TEST_REPORT.md.
 
+**Historical (2026-11-16):** this page describes the older predicted-jump rules. The current protocol has Rules 1-9 with announced jumps (see `otpac_m4.js`). `verify_exhaustive.js` and `verify_hybrid.js` only drove the older rules and were removed; `verify_prob.js` runs the current rules.
+
 **Short answer: in some cases there was pad reuse.**
 
 - The exhaustive search finds a pad reuse at n = 24, d = 1, after only 16 sends.

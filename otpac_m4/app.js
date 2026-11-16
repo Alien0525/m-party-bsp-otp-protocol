@@ -1,6 +1,6 @@
 // ===========================================================================
 // OTPAC m=4 · interactive monitor (UI driver for otpac_m4.js).
-// The protocol logic lives entirely in otpac_m4.js (Rules R1-R5, R7-R9, R12, R14 walk timeline, R20 announced jumps); this file
+// The protocol logic lives entirely in otpac_m4.js (Rules 1-9); this file
 // only schedules Sends, models the network (at most d undelivered messages per
 // recipient, as in the paper's family U^{4,n}_{A,d}) and draws the state.
 // Parties: A = P0 (->), B = P1 (<-) share arena [1, n/2]; C = P2 (->), D = P3 (<-)
@@ -46,19 +46,19 @@ function initSystem() {
         const others = new Map();
         for (const k of world.parties) if (k.id !== me.id) others.set(k.id, { pos: k.pos, dir: k.dir, buf: [] });
         const v = { self: { pos: me.pos, dir: me.dir }, others, used: new Set() };
-        for (const k of world.parties) if (k.id !== me.id) refreshBuffer(v, k.id, N, D, world.nodes);
+        for (const k of world.parties) if (k.id !== me.id) refreshBuffer(v, k.id, N, D);
         views.set(me.id, v);
         me.jumps = 0;
     }
     queue = parseSequence($('inpSeq').value).split('');
     qi = 0;
     log(`[INIT] n=${N}, d=${D}, delivery=${MODE}, seed=${SEED}. A,B in [1,${Math.floor(N / 2)}]; C,D in [${Math.floor(N / 2) + 1},${N}].`, 'sys');
-    log(`[INIT] Each party reserves, for every other party, the next ≤ ${D} pads it may already have used without being heard (R1, R4–R9).`, 'sys');
+    log(`[INIT] Each party reserves, for every other party, the next ≤ ${D} pads it may already have used without being heard (Rules 5–8).`, 'sys');
     setButtons(); renderAll();
 }
 
 // --------------------------------------------------------------------------- network
-function applyRecv(rid, m) { if (m.ann) { deliverAnn(views.get(rid), m.from, m.q, m.s0, m.pos0, m.aseq, N, D, world.nodes); return; } deliverBuffer(views.get(rid), m.from, m.pad, m.dir, N, D, world.nodes, m.sseq); }
+function applyRecv(rid, m) { if (m.ann) { deliverAnn(views.get(rid), m.from, m.q, m.s0, m.pos0, m.aseq, N, D); return; } deliverBuffer(views.get(rid), m.from, m.pad, m.dir, N, D, world.nodes, m.sseq); }
 function removeSet(del) { if (!del.size) return; inflight = inflight.filter(m => !del.has(m)); }
 function deliverBefore(rid) {
     const mine = inflight.filter(m => m.to === rid), del = new Set();
@@ -114,7 +114,7 @@ function stepOnce() {
     const v = views.get(me.id); v.self.pos = me.pos; v.self.dir = me.dir;
     const L = LETTERS[me.id];
     let nx;
-    if (isAnnounce()) {                         // Rule 20: announce the jump d+1 times, then land
+    {                                           // Rules 1-4: walk, or announce the jump d+1 times, then land
         const act = annMove(me.pos, me.dir, me.ann || null, v, N, D, world.nodes);
         if (act && act.type === 'ann') {
             steps++;
@@ -127,11 +127,11 @@ function stepOnce() {
         }
         nx = !act ? null : act.type === 'walk' ? { pad: act.pad, jumped: false, face: me.dir } : { pad: act.q, jumped: true, face: me.dir };
         if (act && act.type === 'land') me.ann = null;
-    } else nx = nextSlot(me.pos, me.dir, v, N, D, world.nodes);
+    }
     steps++;
     if (!nx) {
-        for (const p of world.parties) p.halted = true;   // Rule 12: one party halts -> protocol halts
-        log(`[${steps}] ${L} @${me.pos}: next pad refused and no BSP node has > 2d = ${2 * D} free pads on its walking side → ${L} halts, so the protocol halts (Rule 12).`, 'warn');
+        for (const p of world.parties) p.halted = true;   // Rule 9: one party halts -> protocol halts
+        log(`[${steps}] ${L} @${me.pos}: next pad refused and no BSP node has > 2d = ${2 * D} free pads on each side → ${L} halts, so the protocol halts (Rule 9).`, 'warn');
         finish(); renderAll(); return false;
     }
     if (world.used.has(nx.pad)) {     // edge case: views disagreed
@@ -142,7 +142,7 @@ function stepOnce() {
     const from = me.pos;
     me.pos = nx.pad; if (nx.jumped) me.dir = nx.face; me.sent++;
     v.self.pos = me.pos; v.self.dir = me.dir;   // the party's own view follows its move
-    refreshAll(v, N, D, world.nodes);           // Rule 13: recompute predictions after own move
+    refreshAll(v, N, D);                        // Rule 6: recompute buffers after own move
     world.used.set(nx.pad, me.id); v.used.add(nx.pad); gseq++;
     if (nx.jumped) {
         me.jumps++;
@@ -236,8 +236,7 @@ function renderView() {
             `<span class="k">reserved</span> <span class="pads">[${fwd.join(', ')}]</span>` +
             (held.length ? ` <span class="k">held</span> <span class="pads">[${held.join(', ')}]</span>` : '') + `</div>`;
     }
-    if (v.selfClaim && v.selfClaim.size) html += `<div class="view-row"><span class="k">own landing claim</span> <span class="pads">[${[...v.selfClaim].join(', ')}]</span></div>`;
-    html += `<div class="view-note">${LETTERS[o]} never uses a pad that is used, someone's believed position, or reserved here (R1). Its reservations are outlined on the pad array.</div>`;
+    html += `<div class="view-note">${LETTERS[o]} never uses a pad that is used, someone's believed position, or reserved here (Rule 1). Its reservations are outlined on the pad array.</div>`;
     box.innerHTML = html;
 }
 

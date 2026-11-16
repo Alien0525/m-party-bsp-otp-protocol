@@ -22,57 +22,30 @@
 // message from the first user (= out-of-order delivery), and walk/jump types.
 //
 // Usage:
-//   node otpac_test_suite.js                 # full suite (tiers A,B,C,D), ~18 min on 2 cores
+//   node otpac_test_suite.js                 # full suite (tiers A,B,C,D), about 70 min on 2 cores
 //   node otpac_test_suite.js A               # just one tier
 //   node otpac_test_suite.js legacy          # parity check vs earlier sweep (n=256,d=2)
 //   node analyze_suite.js                    # after a full run: mechanisms + efficiency table
 // Results: suite_results.jsonl (one record per run) + printed summary.
 //
-// Messages carry the sender's message number (Rule 8 in otpac_m4.js).
-//   LEGACY_RECEIVE=1 node otpac_test_suite.js
-//       reproduces the OLD receive behaviour (no message number; the believed
-//       position always moves to the pad of whichever message arrived last),
-//       for before/after comparison. Output: suite_results_legacyreceive.jsonl
-//   STICKY=0 / OPP_EXEMPT=0 node otpac_test_suite.js
-//       switch off Rule 9 (sticky walk reservations) / the back-side clearance
-//       exemption for opposite-direction reservations (both ON by default).
-//   SKIP_JUMP_POLICY=guided|none node otpac_test_suite.js
-//       alternative policies for Rule 8(b) case (iii), an unforeseen jump among the
-//       skipped messages (default "both"; see assumeSkipped in otpac_m4.js).
+// Protocol: the rules in otpac_m4.js (Rules 1-9).
+//   RECHECK=0 node otpac_test_suite.js   switch off the re-check of Rule 4(b) (comparison only)
+//   THREE=1   node otpac_test_suite.js   3-party protocol: P3 stays silent at pad n for the whole run
 // ===========================================================================
 const E = require("./otpac_m4.js");
 
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 
-const LEGACY_RECEIVE = (process.env.LEGACY_RECEIVE==="1");       // reproduce pre-Rule-8 behaviour (for comparison only)
-const SKIP_JUMP_POLICY = process.env.SKIP_JUMP_POLICY || "both";   // Rule 8(b) case (iii): both | guided | none
-E.setSkipJumpPolicy(SKIP_JUMP_POLICY);
-const STICKY = process.env.STICKY!=="0", OPP_EXEMPT = process.env.OPP_EXEMPT!=="0";   // Rules 9 and 3-refinement (default ON)
-const STICKY_JUMPS = process.env.STICKY_JUMPS!=='0';   // hold jump-predicted pads too (default ON); STICKY_JUMPS=0 -> older Rule 6 behaviour
-const SHARED_SLOTS = process.env.SHARED_SLOTS==='1';   // old Rule 10 (removed; default OFF); SHARED_SLOTS=1 -> turn it back on
-const KEEP_NEXT = process.env.KEEP_NEXT==='1';         // old Rule 11 (removed 2026-11-04; default OFF); KEEP_NEXT=1 -> turn it back on
-const SELF_LAG = process.env.SELF_LAG==="1";         // SELF_LAG=1 reproduces the old bug: a party's own position in its view lagged one send behind
-const HALT_ALL = process.env.HALT_ALL || "instant";   // Rule 12, default "instant": stop everyone when one party halts; HALT_ALL=off -> old behaviour. instant = oracle stop; msg = the halting party broadcasts a halt notice, each party stops when it receives it
-const TWO_TIMELINES = process.env.TWO_TIMELINES!=="0";   // Rule 14 (default ON): reserve walk + jump timelines for head-on parties; TWO_TIMELINES=0 -> off
-const CONFLICT_ALT = process.env.CONFLICT_ALT!=="0";      // Rule 19 shared pad -> also reserve the way around it (default ON)
-const KEEP_JUMP_HELD = process.env.KEEP_JUMP_HELD!=="0";   // Rule 18 keep held jump pads until the jump is known (default ON)
-const HOLD_AFTER_JUMP = process.env.HOLD_AFTER_JUMP!=="0"; // Rule 17 hold the walk after a held jumpspot (default ON)
-const FREE_HELD = process.env.FREE_HELD!=="0";        // Rule 16 free held jump pads once the actual jump is known (default ON); FREE_HELD=0 -> off
-const SELF_RES = process.env.SELF_RES!=="0";          // Rule 15 own reservation in priority order (default ON); SELF_RES=0 -> off
-const SELF_AHEAD = process.env.SELF_AHEAD!=="0";      // Rule 13 legal landings only + recompute after own move (default ON); SELF_AHEAD=0 -> off
-const FRONT_ONLY = process.env.FRONT_ONLY==="1";      // Rule 3 checks only the lander's front side (FRONT_ONLY=1); default: both sides
-const FALLBACK = process.env.FALLBACK || "off";
-const ANNOUNCE = process.env.ANNOUNCE!=="0";            // Rule 20 announced jumps (default ON); ANNOUNCE=0 -> old predicted jumps (R1-R19)
-const RECHECK = process.env.RECHECK!=="0";              // Rule 20 re-check of the jumpspot after the last announcement (default ON)
-const THREE = process.env.THREE==="1";                  // 3-party test: P3 stays silent at pad n for the whole run       // experimental: reserve one pad at the next jumpspot when no node is valid (first|best)
-E.setOptions({announce:ANNOUNCE, recheck:RECHECK, sticky:STICKY, oppExempt:OPP_EXEMPT, stickyJumps:STICKY_JUMPS, sharedSlots:SHARED_SLOTS, contested:KEEP_NEXT?"always":"off", fallback:FALLBACK, frontOnly:FRONT_ONLY, selfAhead:SELF_AHEAD, twoTimelines:TWO_TIMELINES, selfRes:SELF_RES, freeHeld:FREE_HELD, holdAfterJump:HOLD_AFTER_JUMP, keepJumpHeld:KEEP_JUMP_HELD, conflictAlt:CONFLICT_ALT});
+const RECHECK = process.env.RECHECK!=="0";   // Rule 4(b) re-check of the jumpspot after the last announcement (default ON)
+const THREE = process.env.THREE==="1";       // 3-party protocol: P3 stays silent at pad n for the whole run
+E.setOptions({recheck:RECHECK});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
 // ---------------------------------------------------------------------------
 function simulate(cfg){
   const {n,d,seed,mode,sched} = cfg;
-  const maxSteps = cfg.maxSteps || (4*n+50 + (ANNOUNCE ? 200*(d+1) : 0));   // announcements take steps but no pads          // steps <= n+4 always; exceeding = liveness bug
+  const maxSteps = cfg.maxSteps || (4*n+50 + 200*(d+1));   // real sends <= n+4; announcements take steps but no pads; exceeding = liveness bug
   const w = E.initWorld(n,d,4);
   const rng = mulberry32(seed);                          // main stream (legacy-compatible)
   const aux = mulberry32(((seed*2654435761)>>>0) ^ 0x5bd1e995); // seeded choices for new modes/schedules
@@ -113,13 +86,9 @@ function simulate(cfg){
   function noteRes(rid){ for(const [K,ob] of views.get(rid).others) for(const b of ob.buf) everRes[rid][K].add(b); }
   function applyRecv(rid,m){
     const v=views.get(rid); if(!v.others.get(m.from)) return;
-    if(m.halt){ w.parties.find(p=>p.id===rid).halted=true; return; }   // HALT_ALL=msg: halt notice
-    if(m.ann){ E.deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d,w.nodes); noteRes(rid); return; }   // Rule 20 announcement
+    if(m.ann){ E.deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d); noteRes(rid); return; }   // Rule 4 announcement
     if(cfg.log) cfg.log.push(`deliver ${"ABCD"[m.from]}#${m.sseq}(pad ${m.pad})→${"ABCD"[rid]}`);
-    // Rule 8: pass the sender's message number (m.sseq). With LEGACY_RECEIVE=1 the
-    // number is withheld, reproducing the old behaviour (position always moves to
-    // the pad of whichever message arrived last).
-    E.deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes, LEGACY_RECEIVE?undefined:m.sseq);
+    E.deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);
     noteRes(rid);
     if(m.gseq>maxRecv[rid][m.from]){ maxRecv[rid][m.from]=m.gseq; maxRecvPad[rid][m.from]=m.pad; }
     else lateOlder++;
@@ -225,7 +194,7 @@ function simulate(cfg){
     if(pend>d) invViol++;
     const v = views.get(me.id); v.self.pos=me.pos; v.self.dir=me.dir;
     let nx;
-    if(ANNOUNCE){                                             // Rule 20
+    {                                                         // Rules 1-4
       const act = E.annMove(me.pos,me.dir,me.ann||null,v,n,d,w.nodes);
       if(act && act.type==="ann"){
         steps++;
@@ -238,14 +207,12 @@ function simulate(cfg){
       }
       nx = !act ? null : act.type==="walk" ? {pad:act.pad,jumped:false,face:me.dir} : {pad:act.q,jumped:true,face:me.dir};
       if(act && act.type==="land") me.ann=null;
-    } else nx = E.nextSlot(me.pos,me.dir,v,n,d,w.nodes);
+    }
     steps++;
     if(!nx){ me.halted=true;
       // efficiency diagnostic: pads this party treats as occupied but that are unused (rho)
       { const {blocked}=E.occupancy(v); let c=0; const tp=new Set(w.parties.map(q=>q.pos)); for(const q of blocked) if(!w.used.has(q)&&!tp.has(q)) c++; lastRho=c; }
-      if(HALT_ALL==="instant") break;
-      if(HALT_ALL==="msg"){ for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,halt:true,gseq:++g}); capQueues(); }
-      continue; }
+      break; }                                               // Rule 9: halt-all
     if(E.buildBlocked(v,n).reservedBy.has(nx.pad)) badWrite++;
     if(w.used.has(nx.pad)){                                   // would-be REUSE -> halt the protocol
       const info = padInfo.get(nx.pad);
@@ -268,15 +235,15 @@ function simulate(cfg){
     if(cfg.log){ const vv=views.get(me.id); const res=[...vv.others].map(([k,o])=>`${"ABCD"[k]}@${o.pos}[${o.buf}]`).join(" ");
       cfg.log.push(`${"ABCD"[me.id]} ${nx.jumped?"JUMPS "+me.pos+"→":"sends on"} ${nx.pad}   (its view: ${res})`); }
     me.pos=nx.pad; if(nx.jumped) me.dir=nx.face; me.sent++; sentCount[me.id]++;
-    if(!SELF_LAG){ v.self.pos=me.pos; v.self.dir=me.dir; }   // the party's own view follows its move (bug fix 2026-10-21)
-    if(SELF_AHEAD) E.refreshAll(v,n,d,w.nodes);             // Rule 13: recompute predictions after own move
+    v.self.pos=me.pos; v.self.dir=me.dir;                    // the party's own view follows its move
+    E.refreshAll(v,n,d);                                     // Rule 6: recompute buffers after own move
     g++; w.used.set(nx.pad,me.id); v.used.add(nx.pad); padInfo.set(nx.pad,{by:me.id,gseq:g,jumped:nx.jumped});
     for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,pad:nx.pad,dir:me.dir,gseq:g,sseq:me.sent});
     deliverAfterSend();
     capQueues();
   }
   // Rule 8(b) statistics: marks made per case, and how many were right (the party really used that pad)
-  const assume={predicted:{marks:0,right:0},straight:{marks:0,right:0},jump:{marks:0,right:0}};
+  const assume={exact:{marks:0,right:0},reserved:{marks:0,right:0},straight:{marks:0,right:0},both:{marks:0,right:0}};
   for(const [,v] of views) for(const [K,o] of v.others){ if(!o.assumedLog) continue;
     for(const e of o.assumedLog){ const st=assume[e.kase]; st.marks++; if(w.used.get(e.pad)===K) st.right++; } }
   const used = w.used.size;
@@ -329,7 +296,7 @@ if(!isMainThread && workerData && workerData.suiteWorker){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (LEGACY_RECEIVE ? "_legacyreceive" : "") + (SKIP_JUMP_POLICY!=="both" ? "_skip"+SKIP_JUMP_POLICY : "") + (STICKY?"":"_nosticky") + (OPP_EXEMPT?"":"_noexempt") + (STICKY_JUMPS?"":"_rule6jumps") + (SHARED_SLOTS?"_rule10":"") + (KEEP_NEXT?"_rule11":"") + (FALLBACK!=="off"?"_fallback"+FALLBACK:"") + (HALT_ALL!=="instant"?"_haltall"+HALT_ALL:"") + (SELF_LAG?"_selflag":"") + (FRONT_ONLY?"_frontonly":"") + (SELF_AHEAD?"":"_noselfahead") + (TWO_TIMELINES?"":"_notwotimelines") + (SELF_RES?"":"_noselfres") + (FREE_HELD?"":"_nofreeheld") + (HOLD_AFTER_JUMP?"":"_noholdafterjump") + (KEEP_JUMP_HELD?"":"_nokeepjumpheld") + (CONFLICT_ALT?"":"_noconflictalt") + (ANNOUNCE?"_announce":"") + (RECHECK?"":"_norecheck") + (THREE?"_3p":"") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (RECHECK?"":"_norecheck") + (THREE?"_3p":"") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);
@@ -352,9 +319,9 @@ function summarize(res){
   console.log(row("all runs",res));
   console.log(`invariant (<= d undelivered at every Send) violations: ${res.reduce((s,r)=>s+r.invViol,0)}  | max undelivered seen vs d: ${res.every(r=>r.maxPending<=r.d)?"always <= d":"EXCEEDED"}`);
   if(res[0] && res[0].assume){
-    const A={predicted:{marks:0,right:0},straight:{marks:0,right:0},jump:{marks:0,right:0}};
-    for(const r of res) for(const k in A){ A[k].marks+=r.assume[k].marks; A[k].right+=r.assume[k].right; }
-    console.log(`Rule 8(b) assumed-occupied marks (policy for unforeseen jumps: ${SKIP_JUMP_POLICY}):`);
+    const A={exact:{marks:0,right:0},reserved:{marks:0,right:0},straight:{marks:0,right:0},both:{marks:0,right:0}};
+    for(const r of res) for(const k in A) if(r.assume[k]){ A[k].marks+=r.assume[k].marks; A[k].right+=r.assume[k].right; }
+    console.log(`Rule 8(b) pads marked used for skipped messages:`);
     for(const k in A) console.log(`   ${k.padEnd(10)} marks=${String(A[k].marks).padStart(7)}  really used by that party=${String(A[k].right).padStart(7)}  phantom=${A[k].marks-A[k].right}`);
   }
   console.log(`badWrite (sender picked a pad reserved in its own view): ${res.reduce((s,r)=>s+r.badWrite,0)}  | timeouts (liveness): ${res.filter(r=>r.timeout).length}`);

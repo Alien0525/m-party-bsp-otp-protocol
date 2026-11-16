@@ -22,7 +22,7 @@ The root `index.html` links to both visualizers (GitHub Pages).
 | `analyze_suite.js` | Post-analysis of the suite results. |
 | `make_figs.py`, `make_fig_state.py`, `gen_tables.py` | Regenerate the paper's figures and tables from the suite results. |
 | `TEST_RESULTS.md` | Detailed results and history of the rules. |
-| `verify_exhaustive.js`, `verify_prob.js`, `verify_hybrid.js` | Checks for Prof. Di Crescenzo's schedules: every send sequence for small n and d; party x sends with probability p_x; and a probabilistic prefix followed by every continuation. |
+| `verify_prob.js` | Check for Prof. Di Crescenzo's schedule (2): party x sends with probability p_x. (The exhaustive checkers `verify_exhaustive.js` and `verify_hybrid.js` drove the older predicted-jump rules and were removed on 2026-11-16; they are in the git history before that date.) |
 | `dump_state.js` | Replays a visualizer run headlessly and dumps the state for the paper's state figure. |
 | `paper/` | Paper sources (`april26v3 (1).tex`), figures (`paper/figs/`) and a compiled preview. |
 | `OTPAC_HANDOFF.md` | Project handoff notes. |
