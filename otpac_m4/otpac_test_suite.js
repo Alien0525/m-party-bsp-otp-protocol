@@ -283,6 +283,15 @@ function buildJobs(tier){
     for(const n of [1000,1024,2048]) for(const d of [2,8])
       all(n,d,[2000,2001],MODES,["random","flood","greedy-gap","burst","stale-max"],"C");
   }
+  if(tier==="M"){                                                                               // m = 2^l parties (2, 8, 16, 32), rounded up
+    const allJ = (m,parties,n,d,seeds,modes,scheds) => { for(const mode of modes) for(const sched of scheds) for(const seed of seeds) jobs.push({tier:"M",m,parties,n,d,seed,mode,sched}); };
+    for(const n of [16,64,256]) for(const d of dList(n,[1,2,4],2)) allJ(2,2,n,d,[4000,4001,4002],MODES,SCHEDS);
+    for(const n of [64,128,256,512,1024]) for(const d of dList(n,[1,2,4,8],8)) for(const p of [5,6,7,8]) allJ(8,p,n,d,[4000],MODES,SCHEDS);
+    const S6=["random","rr","burst","silent1","greedy-gap","stale-max"];
+    for(const n of [256,512,1024]) for(const d of dList(n,[1,2,4],16)) for(const p of [12,16]) allJ(16,p,n,d,[4000],MODES,S6);
+    for(const n of [512,1024]) for(const d of dList(n,[1,2],32)) for(const p of [24,32]) allJ(32,p,n,d,[4000],MODES,["random","silent1","greedy-gap"]);
+    return jobs;
+  }
   if(tier==="X"){                                                                               // clash stress: same-direction parties in lockstep
     for(const [m,parties] of [[4,4],[4,3],[8,8],[8,6],[8,5]])
       for(const n of [64,128,256,512]) for(const d of dList(n,[1,2,3,4,8],m))
