@@ -31,6 +31,8 @@
 // Protocol: the rules in otpac_m4.js (Rules 1-9).
 //   RECHECK=0 node otpac_test_suite.js   switch off the re-check of Rule 4(b) (comparison only)
 //   THREE=1   node otpac_test_suite.js   3-party protocol: P3 stays silent at pad n for the whole run
+//   CLASH=giveup node otpac_test_suite.js   old Rule 4(a): on a clash both give up (comparison only)
+//   node run_resumable.js M out.jsonl 2      m = 2, 8, 16, 32 parties (tier M); tier X = clash stress
 // ===========================================================================
 const E = require("./otpac_m4.js");
 
@@ -39,7 +41,7 @@ function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a
 
 const RECHECK = process.env.RECHECK!=="0";   // Rule 4(b) re-check of the jumpspot after the last announcement (default ON)
 const THREE = process.env.THREE==="1";       // 3-party protocol: P3 stays silent at pad n for the whole run
-const CLASH = process.env.CLASH || "giveup";   // Rule 4(a) on a clash: giveup (all give up) | queue (rotating priority queue)
+const CLASH = process.env.CLASH || "queue";   // Rule 4(a) on a clash: queue (rotating priority queue, default) | giveup (all give up, comparison only)
 E.setOptions({recheck:RECHECK, clash:CLASH});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
@@ -324,7 +326,7 @@ if(!isMainThread && workerData && workerData.suiteWorker){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (RECHECK?"":"_norecheck") + (CLASH!=="giveup"?"_"+CLASH:"") + (THREE?"_3p":"") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (RECHECK?"":"_norecheck") + (CLASH!=="queue"?"_"+CLASH:"") + (THREE?"_3p":"") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);

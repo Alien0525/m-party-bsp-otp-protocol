@@ -59,7 +59,7 @@
 // Option recheck (default ON) switches Rule 4(b); OFF only for comparison runs.
 // ===========================================================================
 
-const OPT = { recheck: true, clash: "giveup" };   // clash: giveup (Rule 4a as written) | queue (rotating priority queue, under test)
+const OPT = { recheck: true, clash: "queue" };   // clash: queue (Rule 4a: rotating priority queue) | giveup (old rule, comparison only)
 function setOptions(o){ Object.assign(OPT, o); }
 
 // static BSP split points, root first

@@ -58,7 +58,7 @@ function initSystem() {
 }
 
 // --------------------------------------------------------------------------- network
-function applyRecv(rid, m) { if (m.ann) { deliverAnn(views.get(rid), m.from, m.q, m.s0, m.pos0, m.aseq, N, D); return; } deliverBuffer(views.get(rid), m.from, m.pad, m.dir, N, D, world.nodes, m.sseq); }
+function applyRecv(rid, m) { if (m.ann) { deliverAnn(views.get(rid), m.from, m.q, m.s0, m.pos0, m.aseq, N, D, m.k); return; } deliverBuffer(views.get(rid), m.from, m.pad, m.dir, N, D, world.nodes, m.sseq); }
 function removeSet(del) { if (!del.size) return; inflight = inflight.filter(m => !del.has(m)); }
 function deliverBefore(rid) {
     const mine = inflight.filter(m => m.to === rid), del = new Set();
@@ -118,11 +118,12 @@ function stepOnce() {
         const act = annMove(me.pos, me.dir, me.ann || null, v, N, D, world.nodes);
         if (act && act.type === 'ann') {
             steps++;
-            if (act.fresh) { me.aseqN = (me.aseqN || 0) + 1; me.ann = { q: act.q, left: D + 1, aseq: me.aseqN, s0: me.sent, pos0: me.pos }; }
-            me.ann.left--; gseq++;
-            const why = act.why === 'clash' ? ' (gave up its earlier spot: another party announced the same pad)' : act.why === 'recheck' ? ' (gave up its earlier spot: no longer clear)' : '';
-            log(`[${steps}] ${L} announces "jumping to ${me.ann.q}" (${D + 1 - me.ann.left}/${D + 1}, no pad used)${act.fresh ? why : ''}`, 'warn');
-            for (const k of world.parties) if (k.id !== me.id) inflight.push({ to: k.id, from: me.id, ann: true, q: me.ann.q, s0: me.ann.s0, pos0: me.ann.pos0, aseq: me.ann.aseq, gseq });
+            if (act.fresh) { me.aseqN = (me.aseqN || 0) + 1; me.ann = { q: act.q, left: D + 1, aseq: me.aseqN, s0: me.sent, pos0: me.pos, k: act.k || 0 }; }
+            if (act.wait) me.ann.waited = (me.ann.waited || 0) + 1; else me.ann.left--; gseq++;
+            const why = act.why === 'clash' ? ' (gave up its earlier spot: a party higher in the priority queue announced the same pad)' : act.why === 'recheck' ? ' (gave up its earlier spot: no longer clear)' : '';
+            if (act.wait) log(`[${steps}] ${L} re-announces "jumping to ${me.ann.q}" (top of the priority queue, waiting ${me.ann.waited}/${D + 1} for the others to move, no pad used)`, 'warn');
+            else log(`[${steps}] ${L} announces "jumping to ${me.ann.q}" (${D + 1 - me.ann.left}/${D + 1}, no pad used)${act.fresh ? why : ''}`, 'warn');
+            for (const k of world.parties) if (k.id !== me.id) inflight.push({ to: k.id, from: me.id, ann: true, q: me.ann.q, s0: me.ann.s0, pos0: me.ann.pos0, aseq: me.ann.aseq, k: me.ann.k, gseq });
             deliverAfterSend(); capQueues(); renderAll(); return true;
         }
         nx = !act ? null : act.type === 'walk' ? { pad: act.pad, jumped: false, face: me.dir } : { pad: act.q, jumped: true, face: me.dir };

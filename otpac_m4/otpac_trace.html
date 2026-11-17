@@ -222,7 +222,7 @@
 // Option recheck (default ON) switches Rule 4(b); OFF only for comparison runs.
 // ===========================================================================
 
-const OPT = { recheck: true };
+const OPT = { recheck: true, clash: "queue" };   // clash: queue (Rule 4a: rotating priority queue) | giveup (old rule, comparison only)
 function setOptions(o){ Object.assign(OPT, o); }
 
 // static BSP split points, root first
@@ -295,6 +295,23 @@ function annMove(pos,dir,st,view,n,d,nodes){
   const {blocked,resDir}=occupancy(view);
   const pick=()=>jumpTarget(dir,blocked,n,d,nodes,resDir);
   if(st && st.left>0) return {type:"ann",q:st.q,fresh:false};          // announcements still to send
+  if(st && OPT.clash==="queue"){                                       // rotating priority queue (see syncRot)
+    syncRot(view,st);
+    const m=view.others.size+1; let me=0; while(view.others.has(me)) me++;
+    const C=[]; let kstar=st.k||0;
+    for(const [id,o] of view.others){ if(typeof id!=="number") continue;
+      const a=latestAnn(o); if(!a||a.q!==st.q||(o.lastNum||0)>a.s0) continue;   // not clashing, or it already sent a ciphertext after it
+      C.push(id); kstar=Math.max(kstar,a.k||0); }
+    const key=id=>((id-kstar)%m+m)%m;            // queue after kstar rotations: party (kstar mod m) on top
+    let why=null;
+    if(C.some(id=>key(id)<key(me))) why="clash";                                  // someone is ahead of me in the queue
+    else if(C.length){ if((st.waited||0)<d+1) return {type:"ann",q:st.q,fresh:false,wait:true};   // I am on top: keep q, wait for them to move
+      why="clash"; }                                                              // no word from them in d+1 turns: give up
+    if(!why && OPT.recheck && !nodeValid(st.q,dir,blocked,resDir,n,d)) why="recheck";
+    if(!why) return {type:"land",q:st.q};
+    const q=pick(); if(q==null) return null;
+    return {type:"ann",q,fresh:true,why,k:view.rot||0};
+  }
   if(st){                                                               // all d+1 sent
     let why=null;
     for(const [id,o] of view.others){ if(typeof id!=="number") continue;   // (a) clash
@@ -307,7 +324,22 @@ function annMove(pos,dir,st,view,n,d,nodes){
   const lin=pos+dir;
   if(lin>=1 && lin<=n && !blocked.has(lin)) return {type:"walk",pad:lin};   // Rule 1
   const q=pick(); if(q==null) return null;
-  return {type:"ann",q,fresh:true,why:null};
+  if(OPT.clash==="queue") syncRot(view,null);
+  return {type:"ann",q,fresh:true,why:null,k:view.rot||0};
+}
+// latest announcement of an observed party
+function latestAnn(o){ let a=null; if(o.anns) for(const x of o.anns.values()) if(!a||x.aseq>a.aseq) a=x; return a; }
+// Rotating priority queue: view.rot = number of rotations this party has applied. Every announcement
+// carries its round's count k. Seeing a larger k, or a clash (two parties' latest announcements of the
+// same pad, own current round included), moves rot up to that k, resp. to the clash's largest k + 1.
+// Using max makes this idempotent, so all parties end at the same count however late they hear things.
+function syncRot(view,st){
+  let rot=view.rot||0; const byPad=new Map();
+  const add=(q,k)=>{ const b=byPad.get(q)||{c:0,k:0}; b.c++; b.k=Math.max(b.k,k||0); byPad.set(q,b); };
+  for(const [id,o] of view.others){ if(typeof id!=="number") continue; const a=latestAnn(o); if(!a) continue; rot=Math.max(rot,a.k||0); add(a.q,a.k); }
+  if(st) add(st.q,st.k);
+  for(const b of byPad.values()) if(b.c>=2) rot=Math.max(rot,b.k+1);
+  view.rot=rot;
 }
 
 // --- announcements as an observer keeps them: o.anns = round # -> {q,s0,pos0,aseq}
@@ -365,10 +397,11 @@ function refreshAll(view,n,d){
 }
 
 // --- Receive an announcement from X
-function deliverAnn(view,fromId,q,s0,pos0,aseq,n,d){
+function deliverAnn(view,fromId,q,s0,pos0,aseq,n,d,k){
   const o=view.others.get(fromId); if(!o) return;
   const anns=o.anns||(o.anns=new Map());
-  if(!anns.has(aseq)) anns.set(aseq,{q,s0,pos0,aseq});
+  if(!anns.has(aseq)) anns.set(aseq,{q,s0,pos0,aseq,k:k||0});
+  if(OPT.clash==="queue") syncRot(view,null);
   refreshAll(view,n,d);
 }
 // --- Receive X's real message number `num` on pad `pad` (Rule 8), then Rules 6-7
@@ -429,7 +462,7 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     const v={self:{pos:me.pos,dir:me.dir},others,used:new Set()};
     for(const k of w.parties)if(k.id!==me.id)refreshBuffer(v,k.id,n,d,w.nodes);views.set(me.id,v);}
   let g=0;
-  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;if(m.ann){deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d);return;}deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);heard[rid][m.from]++;}
+  function applyRecv(rid,m){const v=views.get(rid),o=v.others.get(m.from);if(!o)return;if(m.ann){deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d,m.k);return;}deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);heard[rid][m.from]++;}
   function removeSet(del){if(!del.size)return;const keep=inflight.filter(m=>!del.has(m));inflight.length=0;inflight.push(...keep);}
   function deliverBefore(rid){
     if(mode==="random"||mode==="adversarial"){const pe=mode==="random"?0.5:0.1;const del=new Set();
@@ -495,12 +528,12 @@ function simulate(n,d,seed,mode,pick,maxSteps){
     let nx;
     {const act=annMove(me.pos,me.dir,me.ann||null,v,n,d,w.nodes);
       if(act&&act.type==="ann"){steps++;
-        if(act.fresh){me.aseqN=(me.aseqN||0)+1;me.ann={q:act.q,left:d+1,aseq:me.aseqN,s0:me.sent,pos0:me.pos};}
-        me.ann.left--;g++;
-        for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,ann:true,q:me.ann.q,s0:me.ann.s0,pos0:me.ann.pos0,aseq:me.ann.aseq,gseq:g});
+        if(act.fresh){me.aseqN=(me.aseqN||0)+1;me.ann={q:act.q,left:d+1,aseq:me.aseqN,s0:me.sent,pos0:me.pos,k:act.k||0};}
+        if(act.wait)me.ann.waited=(me.ann.waited||0)+1;else me.ann.left--;g++;
+        for(const k of w.parties)if(k.id!==me.id)inflight.push({to:k.id,from:me.id,ann:true,q:me.ann.q,s0:me.ann.s0,pos0:me.ann.pos0,aseq:me.ann.aseq,k:me.ann.k,gseq:g});
         deliverAfterSend();capQueues();
-        const why=act.why==="clash"?" (gave up: clashing announcement seen)":act.why==="recheck"?" (gave up: spot no longer clear)":"";
-        events.push({step:steps,type:"ANNOUNCE",actor:me.id,from:prev,to:me.ann.q,note:`announces jump to ${me.ann.q} (${d+1-me.ann.left}/${d+1})${act.fresh?why:""}`,snap:snapshot()});
+        const why=act.why==="clash"?" (gave up: a party higher in the priority queue announced the same pad)":act.why==="recheck"?" (gave up: spot no longer clear)":"";
+        events.push({step:steps,type:"ANNOUNCE",actor:me.id,from:prev,to:me.ann.q,note:act.wait?`re-announces ${me.ann.q} (top of the priority queue, waiting ${me.ann.waited}/${d+1})`:`announces jump to ${me.ann.q} (${d+1-me.ann.left}/${d+1})${act.fresh?why:""}`,snap:snapshot()});
         continue;}
       nx=!act?null:act.type==="walk"?{pad:act.pad,jumped:false,face:me.dir}:{pad:act.q,jumped:true,face:me.dir};
       if(act&&act.type==="land")me.ann=null;

@@ -75,8 +75,8 @@ if SRCIL:
             f"had median {q(0.5)}, was at most {q(0.9)} in 90\\% of the rounds and at most {q(0.99)} in 99\\%; the maximum, "
             f"{I['maxIn']}, occurred under the sender order {{\\em {w['sched']}}}. In {num(I['runsBoth'])} of these runs two players "
             f"had announcement rounds open at the same time. Rule 4 does not rely on the announcements being close together "
-            f"in the send sequence: the jumping player lands only if no other player announced the same pad and the spot "
-            f"is still valid in its view.")
+            f"in the send sequence: the jumping player lands only if no other player's announcement of the same pad is still "
+            f"in force in its view and the spot is still valid.")
 M("INTERLEAVETXT", itxt)
 
 # J and rho: from the per-run counters the suite records (jumps, rho), over runs
