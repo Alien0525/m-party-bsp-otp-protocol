@@ -8,7 +8,7 @@ if (!isMainThread) {
 } else {
   const fs = require("fs");
   const [tier, outFile, Wa] = process.argv.slice(2);
-  const key = r => [r.tier, r.n, r.d, r.seed, r.mode, r.sched].join("|");
+  const key = r => [r.tier, r.n, r.d, r.seed, r.mode, r.sched].concat(r.tier==="M"||r.tier==="X"?[r.m,r.parties]:[]).join("|");
   const done = new Set();
   if (fs.existsSync(outFile)) for (const l of fs.readFileSync(outFile, "utf8").split("\n")) if (l.trim()) done.add(key(JSON.parse(l)));
   // run slow (large n) jobs first so the tail is short

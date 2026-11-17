@@ -34,33 +34,39 @@
 // ===========================================================================
 const E = require("./otpac_m4.js");
 
+const L = new Proxy({}, {get:(_,k)=>(+k<26?String.fromCharCode(65+ +k):"P"+k)});   // party labels A, B, C, ...
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 
 const RECHECK = process.env.RECHECK!=="0";   // Rule 4(b) re-check of the jumpspot after the last announcement (default ON)
 const THREE = process.env.THREE==="1";       // 3-party protocol: P3 stays silent at pad n for the whole run
-E.setOptions({recheck:RECHECK});
+const CLASH = process.env.CLASH || "giveup";   // Rule 4(a) on a clash: giveup (all give up) | queue (rotating priority queue)
+E.setOptions({recheck:RECHECK, clash:CLASH});
 const MODES = ["instant","worst","random","adversarial","lifo","randcap","shuffle","target-sender","target-recv"];
 const SCHEDS = ["random","rr","flood","flood-rev","skew","arena-skew","burst","silent1","silent2","pair-alt","greedy-gap","stale-max"];
 
 // ---------------------------------------------------------------------------
 function simulate(cfg){
   const {n,d,seed,mode,sched} = cfg;
-  const maxSteps = cfg.maxSteps || (4*n+50 + 200*(d+1));   // real sends <= n+4; announcements take steps but no pads; exceeding = liveness bug
-  const w = E.initWorld(n,d,4);
+  // m = protocol size, a power of 2 (default 4); parties = how many actually send. A party count
+  // that is not a power of 2 is rounded up to m, and parties with id >= `parties` stay silent.
+  const M = cfg.m || 4, NP = cfg.parties || (THREE || cfg.three ? 3 : M);
+  const maxSteps = cfg.maxSteps || (4*n+50 + 200*(d+1)*M/4);   // real sends <= n+m; announcements take steps but no pads; exceeding = liveness bug
+  const w = E.initWorld(n,d,M);
   const rng = mulberry32(seed);                          // main stream (legacy-compatible)
   const aux = mulberry32(((seed*2654435761)>>>0) ^ 0x5bd1e995); // seeded choices for new modes/schedules
   const ids = w.parties.map(p=>p.id);
   const P = id => w.parties.find(p=>p.id===id);
 
   // seeded roles
-  const targetParty = ids[Math.floor(aux()*4)];         // target-sender / target-recv
-  const fav = ids[Math.floor(aux()*4)];                  // skew
-  const favArena = Math.floor(aux()*2);                  // arena-skew
-  const sil1 = ids[Math.floor(aux()*4)];
-  const sil2 = ids[(ids.indexOf(sil1) + 1 + Math.floor(aux()*3)) % 4];   // always different from sil1
+  const targetParty = ids[Math.floor(aux()*M)];         // target-sender / target-recv
+  const fav = ids[Math.floor(aux()*M)];                  // skew
+  const favArena = Math.floor(aux()*(M/2));              // arena-skew
+  const sil1 = ids[Math.floor(aux()*M)];
+  const sil2 = ids[(ids.indexOf(sil1) + 1 + Math.floor(aux()*(M-1))) % M];   // always different from sil1
   const silent = new Set(sched==="silent1"?[sil1]:sched==="silent2"?[sil1,sil2]:[]);
-  if(THREE || cfg.three) silent.add(3);                  // 3-party protocol = 4-party with P3 silent
-  const firstPair = Math.floor(aux()*2);
+  for(let id=NP; id<M; id++) silent.add(id);             // rounded-up protocol: the extra parties never send
+  const firstPair = Math.floor(aux()*(M/2));
+  const syncQ=[]; let syncFlip=false; const syncP = sched==="sync" ? 0.2+0.6*aux() : 0;   // sync: share of turns for right-movers (drawn only here)
 
   // views
   const views = new Map();
@@ -74,7 +80,7 @@ function simulate(cfg){
   }
 
   let g = 0;
-  const sentCount = {0:0,1:0,2:0,3:0};
+  const sentCount = {}; for(const id of ids) sentCount[id]=0;
   const maxRecv = {};                                    // maxRecv[obs][sender] = highest gseq received
   const maxRecvPad = {};                                 // pad of that highest-gseq message
   for(const o of ids){ maxRecv[o]={}; maxRecvPad[o]={}; for(const k of ids) if(k!==o){ maxRecv[o][k]=0; maxRecvPad[o][k]=null; } }
@@ -86,8 +92,8 @@ function simulate(cfg){
   function noteRes(rid){ for(const [K,ob] of views.get(rid).others) for(const b of ob.buf) everRes[rid][K].add(b); }
   function applyRecv(rid,m){
     const v=views.get(rid); if(!v.others.get(m.from)) return;
-    if(m.ann){ E.deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d); noteRes(rid); return; }   // Rule 4 announcement
-    if(cfg.log) cfg.log.push(`deliver ${"ABCD"[m.from]}#${m.sseq}(pad ${m.pad})→${"ABCD"[rid]}`);
+    if(m.ann){ E.deliverAnn(v,m.from,m.q,m.s0,m.pos0,m.aseq,n,d,m.k); noteRes(rid); return; }   // Rule 4 announcement
+    if(cfg.log) cfg.log.push(`deliver ${L[m.from]}#${m.sseq}(pad ${m.pad})→${L[rid]}`);
     E.deliverBuffer(v,m.from,m.pad,m.dir,n,d,w.nodes,m.sseq);
     noteRes(rid);
     if(m.gseq>maxRecv[rid][m.from]){ maxRecv[rid][m.from]=m.gseq; maxRecvPad[rid][m.from]=m.pad; }
@@ -143,6 +149,12 @@ function simulate(cfg){
         for(const p of lp){ u -= cfg.p[p.id]; if(u<0) return p; }
         return lp[lp.length-1]; }
       case "rr": return live[steps%live.length];
+      case "sync": case "sync-rr": {      // clash stress: every live party moving the same way sends back to back
+        if(!syncQ.length){ const right = sched==="sync-rr" ? (syncFlip=!syncFlip) : aux()<syncP;
+          const grp=live.filter(p=>p.dir===(right?+1:-1)); if(!grp.length) return live[Math.floor(aux()*live.length)];
+          syncQ.push(...grp); }
+        while(syncQ.length){ const i=syncQ.shift(); if(live.includes(i)) return i; }
+        return live[Math.floor(aux()*live.length)]; }
       case "flood": return live[0];
       case "flood-rev": return live[live.length-1];
       case "skew": { const f=live.find(p=>p.id===fav); return (f && rng()<0.7) ? f : uni(); }
@@ -155,7 +167,7 @@ function simulate(cfg){
         burstParty = uni(); burstLeft = Math.floor(rng()*3*d); return burstParty; }
       case "silent1": case "silent2": return uni();
       case "pair-alt": {
-        const pairs = firstPair===0 ? [[0,1],[2,3]] : [[2,3],[0,1]];
+        const pairs = []; for(let a=0;a<M/2;a++){ const b=(firstPair+a)%(M/2); pairs.push([2*b,2*b+1]); }
         for(const pr of pairs){
           const lp = pr.map(P).filter(p=>!p.halted && !silent.has(p.id));
           if(lp.length){ pairTurn++; return lp[pairTurn%lp.length]; }
@@ -183,7 +195,7 @@ function simulate(cfg){
   while(steps<maxSteps){
     if(cfg.switchWhen && cfg.switchWhen({w,views,inflight,n,d})){   // hand the current state to the exhaustive checker
       return { switched:true, steps, snapshot: structuredClone({ parties:w.parties.map(p=>({id:p.id,pos:p.pos,dir:p.dir,halted:!!p.halted,sent:p.sent})),
-               used:w.used, views:[0,1,2,3].map(i=>views.get(i)), inflight:inflight.map(m=>({to:m.to,from:m.from,pad:m.pad,dir:m.dir,sseq:m.sseq})) }) };
+               used:w.used, views:ids.map(i=>views.get(i)), inflight:inflight.map(m=>({to:m.to,from:m.from,pad:m.pad,dir:m.dir,sseq:m.sseq})) }) };
     }
     const me = pick(steps);
     if(!me) break;
@@ -199,10 +211,10 @@ function simulate(cfg){
       if(act && act.type==="ann"){
         steps++;
         if(act.fresh){ if(act.why==="clash") annStats.clash++; else if(act.why==="recheck") annStats.recheck++; else annStats.rounds++;
-          me.aseqN=(me.aseqN||0)+1; me.ann={q:act.q,left:d+1,aseq:me.aseqN,s0:me.sent,pos0:me.pos}; }
-        me.ann.left--; annStats.msgs++;
-        if(cfg.log) cfg.log.push(`${"ABCD"[me.id]} announces jump to ${me.ann.q} (${d+1-me.ann.left}/${d+1})`);
-        for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,ann:true,q:me.ann.q,s0:me.ann.s0,pos0:me.ann.pos0,aseq:me.ann.aseq,gseq:++g});
+          me.aseqN=(me.aseqN||0)+1; me.ann={q:act.q,left:d+1,aseq:me.aseqN,s0:me.sent,pos0:me.pos,k:act.k||0}; }
+        if(act.wait){ annStats.wait=(annStats.wait||0)+1; me.ann.waited=(me.ann.waited||0)+1; } else me.ann.left--; annStats.msgs++;
+        if(cfg.log) cfg.log.push(`${L[me.id]} announces jump to ${me.ann.q} (${d+1-me.ann.left}/${d+1})`);
+        for(const k of w.parties) if(k.id!==me.id) inflight.push({to:k.id,from:me.id,ann:true,q:me.ann.q,s0:me.ann.s0,pos0:me.ann.pos0,aseq:me.ann.aseq,k:me.ann.k,gseq:++g});
         deliverAfterSend(); capQueues(); continue;
       }
       nx = !act ? null : act.type==="walk" ? {pad:act.pad,jumped:false,face:me.dir} : {pad:act.q,jumped:true,face:me.dir};
@@ -232,8 +244,8 @@ function simulate(cfg){
       break;
     }
     // commit
-    if(cfg.log){ const vv=views.get(me.id); const res=[...vv.others].map(([k,o])=>`${"ABCD"[k]}@${o.pos}[${o.buf}]`).join(" ");
-      cfg.log.push(`${"ABCD"[me.id]} ${nx.jumped?"JUMPS "+me.pos+"→":"sends on"} ${nx.pad}   (its view: ${res})`); }
+    if(cfg.log){ const vv=views.get(me.id); const res=[...vv.others].map(([k,o])=>`${L[k]}@${o.pos}[${o.buf}]`).join(" ");
+      cfg.log.push(`${L[me.id]} ${nx.jumped?"JUMPS "+me.pos+"→":"sends on"} ${nx.pad}   (its view: ${res})`); }
     me.pos=nx.pad; if(nx.jumped) me.dir=nx.face; me.sent++; sentCount[me.id]++;
     v.self.pos=me.pos; v.self.dir=me.dir;                    // the party's own view follows its move
     E.refreshAll(v,n,d);                                     // Rule 6: recompute buffers after own move
@@ -250,13 +262,13 @@ function simulate(cfg){
   // efficiency diagnostics: number of jumps J, and the maximal runs of unused pads at the end
   let jumps=0, rho=lastRho; for(const [,inf] of padInfo) if(inf.jumped) jumps++;
   let runsEnd=0, maxRunEnd=0, cur=0; for(let q=1;q<=n+1;q++){ if(q<=n && !w.used.has(q)) cur++; else { if(cur>0){runsEnd++; maxRunEnd=Math.max(maxRunEnd,cur);} cur=0; } }
-  return { assume, n,d,seed,mode,sched, used, eff:used/n, wasted:n-used, steps, timeout:steps>=maxSteps, jumps, runsEnd, maxRunEnd, rho,
+  return { m:M, parties:NP, assume, n,d,seed,mode,sched, used, eff:used/n, wasted:n-used, steps, timeout:steps>=maxSteps, jumps, runsEnd, maxRunEnd, rho,
            reuse, badWrite, invViol, maxPending, lateOlder, ann:annStats };
 }
 
 // ---------------------------------------------------------------------------
 // test grid
-function dList(n, cands){ const dmax=Math.floor(n/4)-1; return [...new Set(cands.filter(x=>x>=1&&x<=dmax).concat(dmax>=1?[dmax]:[]))].sort((a,b)=>a-b); }
+function dList(n, cands, M=4){ const dmax=Math.floor(n/M)-1; return [...new Set(cands.filter(x=>x>=1&&x<=dmax).concat(dmax>=1?[dmax]:[]))].sort((a,b)=>a-b); }
 function buildJobs(tier){
   const jobs=[];
   const all = (n,d,seeds,modes,scheds,t) => { for(const mode of modes) for(const sched of scheds) for(const seed of seeds) jobs.push({tier:t,n,d,seed,mode,sched}); };
@@ -270,6 +282,13 @@ function buildJobs(tier){
   if(!tier||tier==="C"){                                                                        // scale: large n
     for(const n of [1000,1024,2048]) for(const d of [2,8])
       all(n,d,[2000,2001],MODES,["random","flood","greedy-gap","burst","stale-max"],"C");
+  }
+  if(tier==="X"){                                                                               // clash stress: same-direction parties in lockstep
+    for(const [m,parties] of [[4,4],[4,3],[8,8],[8,6],[8,5]])
+      for(const n of [64,128,256,512]) for(const d of dList(n,[1,2,3,4,8],m))
+        for(const mode of MODES) for(const sched of ["sync","sync-rr"]) for(let seed=5000;seed<5000+(m===4?10:3);seed++)
+          jobs.push({tier:"X",m,parties,n,d,seed,mode,sched});
+    return jobs;
   }
   if(!tier||tier==="D"){                                                                        // d near the boundary, many seeds
     for(const n of [64,128,256]) for(const d of [Math.floor(n/8), Math.floor(n/4)-2, Math.floor(n/4)-1])
@@ -296,7 +315,7 @@ if(!isMainThread && workerData && workerData.suiteWorker){
   Promise.all(chunks.map(c=>new Promise((res,rej)=>{ const wk=new Worker(__filename,{workerData:{jobs:c,suiteWorker:true}}); wk.on("message",res); wk.on("error",rej); })))
   .then(parts=>{
     const res=parts.flat();
-    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (RECHECK?"":"_norecheck") + (THREE?"_3p":"") + ".jsonl";
+    const outFile = (tier ? `suite_results_${tier}` : "suite_results") + (RECHECK?"":"_norecheck") + (CLASH!=="giveup"?"_"+CLASH:"") + (THREE?"_3p":"") + ".jsonl";
     fs.writeFileSync(outFile, res.map(r=>JSON.stringify(r)).join("\n")+"\n");
     console.error(`done in ${((Date.now()-t0)/1000).toFixed(1)}s -> ${outFile}`);
     summarize(res);

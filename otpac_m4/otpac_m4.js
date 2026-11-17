@@ -59,7 +59,7 @@
 // Option recheck (default ON) switches Rule 4(b); OFF only for comparison runs.
 // ===========================================================================
 
-const OPT = { recheck: true };
+const OPT = { recheck: true, clash: "giveup" };   // clash: giveup (Rule 4a as written) | queue (rotating priority queue, under test)
 function setOptions(o){ Object.assign(OPT, o); }
 
 // static BSP split points, root first
@@ -132,6 +132,23 @@ function annMove(pos,dir,st,view,n,d,nodes){
   const {blocked,resDir}=occupancy(view);
   const pick=()=>jumpTarget(dir,blocked,n,d,nodes,resDir);
   if(st && st.left>0) return {type:"ann",q:st.q,fresh:false};          // announcements still to send
+  if(st && OPT.clash==="queue"){                                       // rotating priority queue (see syncRot)
+    syncRot(view,st);
+    const m=view.others.size+1; let me=0; while(view.others.has(me)) me++;
+    const C=[]; let kstar=st.k||0;
+    for(const [id,o] of view.others){ if(typeof id!=="number") continue;
+      const a=latestAnn(o); if(!a||a.q!==st.q||(o.lastNum||0)>a.s0) continue;   // not clashing, or it already sent a ciphertext after it
+      C.push(id); kstar=Math.max(kstar,a.k||0); }
+    const key=id=>((id-kstar)%m+m)%m;            // queue after kstar rotations: party (kstar mod m) on top
+    let why=null;
+    if(C.some(id=>key(id)<key(me))) why="clash";                                  // someone is ahead of me in the queue
+    else if(C.length){ if((st.waited||0)<d+1) return {type:"ann",q:st.q,fresh:false,wait:true};   // I am on top: keep q, wait for them to move
+      why="clash"; }                                                              // no word from them in d+1 turns: give up
+    if(!why && OPT.recheck && !nodeValid(st.q,dir,blocked,resDir,n,d)) why="recheck";
+    if(!why) return {type:"land",q:st.q};
+    const q=pick(); if(q==null) return null;
+    return {type:"ann",q,fresh:true,why,k:view.rot||0};
+  }
   if(st){                                                               // all d+1 sent
     let why=null;
     for(const [id,o] of view.others){ if(typeof id!=="number") continue;   // (a) clash
@@ -144,7 +161,22 @@ function annMove(pos,dir,st,view,n,d,nodes){
   const lin=pos+dir;
   if(lin>=1 && lin<=n && !blocked.has(lin)) return {type:"walk",pad:lin};   // Rule 1
   const q=pick(); if(q==null) return null;
-  return {type:"ann",q,fresh:true,why:null};
+  if(OPT.clash==="queue") syncRot(view,null);
+  return {type:"ann",q,fresh:true,why:null,k:view.rot||0};
+}
+// latest announcement of an observed party
+function latestAnn(o){ let a=null; if(o.anns) for(const x of o.anns.values()) if(!a||x.aseq>a.aseq) a=x; return a; }
+// Rotating priority queue: view.rot = number of rotations this party has applied. Every announcement
+// carries its round's count k. Seeing a larger k, or a clash (two parties' latest announcements of the
+// same pad, own current round included), moves rot up to that k, resp. to the clash's largest k + 1.
+// Using max makes this idempotent, so all parties end at the same count however late they hear things.
+function syncRot(view,st){
+  let rot=view.rot||0; const byPad=new Map();
+  const add=(q,k)=>{ const b=byPad.get(q)||{c:0,k:0}; b.c++; b.k=Math.max(b.k,k||0); byPad.set(q,b); };
+  for(const [id,o] of view.others){ if(typeof id!=="number") continue; const a=latestAnn(o); if(!a) continue; rot=Math.max(rot,a.k||0); add(a.q,a.k); }
+  if(st) add(st.q,st.k);
+  for(const b of byPad.values()) if(b.c>=2) rot=Math.max(rot,b.k+1);
+  view.rot=rot;
 }
 
 // --- announcements as an observer keeps them: o.anns = round # -> {q,s0,pos0,aseq}
@@ -202,10 +234,11 @@ function refreshAll(view,n,d){
 }
 
 // --- Receive an announcement from X
-function deliverAnn(view,fromId,q,s0,pos0,aseq,n,d){
+function deliverAnn(view,fromId,q,s0,pos0,aseq,n,d,k){
   const o=view.others.get(fromId); if(!o) return;
   const anns=o.anns||(o.anns=new Map());
-  if(!anns.has(aseq)) anns.set(aseq,{q,s0,pos0,aseq});
+  if(!anns.has(aseq)) anns.set(aseq,{q,s0,pos0,aseq,k:k||0});
+  if(OPT.clash==="queue") syncRot(view,null);
   refreshAll(view,n,d);
 }
 // --- Receive X's real message number `num` on pad `pad` (Rule 8), then Rules 6-7
